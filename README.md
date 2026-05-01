@@ -41,6 +41,7 @@ Read `SETUP.md`. Plan on ~30 minutes the first time.
 job-pipeline/
 ├── README.md                          ← you are here
 ├── SETUP.md                           ← step-by-step setup guide
+├── SYNC.md                            ← two-machine git workflow
 ├── INSTALL_PROMPT.md                  ← paste this to Claude after manual setup
 ├── scheduled-task-prompt-template.md  ← the daily run prompt template
 ├── config/
