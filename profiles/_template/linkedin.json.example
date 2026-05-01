@@ -1,0 +1,12 @@
+{
+  "_about": "Per-profile LinkedIn integration settings. The pipeline reads this to decide whether to fetch LinkedIn job-alert emails for this profile and which Gmail label to filter on.",
+
+  "enabled": false,
+  "_enabled_help": "Set to true to enable LinkedIn coverage for this profile. Requires Gmail MCP connector + LinkedIn alerts set up to land in your inbox under the gmail_label below. If false, the pipeline skips LinkedIn for this profile entirely (Indeed and Dice still run).",
+
+  "gmail_label": "linkedin-jobs-PROFILE_NAME",
+  "_gmail_label_help": "Gmail label that LinkedIn alert emails for THIS profile are tagged with. Use a per-profile label (e.g. 'linkedin-jobs-alice') so multiple profiles don't see each other's alerts. Set up the label via a Gmail filter on `from:jobalerts-noreply@linkedin.com` AND any per-profile distinguisher (forwarded-from address, subject contains, etc.).",
+
+  "gmail_mcp_id": null,
+  "_gmail_mcp_id_help": "Optional override for the Gmail MCP UUID for this profile. Leave null to use the default Gmail MCP discovered at install time. Set this only if you've installed multiple Gmail MCP connectors in Cowork (each authorized to a different Google account)."
+}

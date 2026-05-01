@@ -369,9 +369,16 @@ def main():
     seen_path = Path(sys.argv[2])
     input_paths = [Path(p) for p in sys.argv[3:]]
 
-    # Load tunable scoring config (auto-detect at <digest_dir>/config/scoring.json)
+    # Load tunable scoring config (auto-detect at <digest_dir>/scoring.json,
+    # which in the multi-profile layout is profiles/<name>/scoring.json next to
+    # the profile's digest.md). For backward compat, also check the legacy
+    # <digest_dir>/config/scoring.json location.
     global CONFIG
-    config_path = out_path.parent / "config" / "scoring.json"
+    candidates = [
+        out_path.parent / "scoring.json",
+        out_path.parent / "config" / "scoring.json",  # legacy single-profile layout
+    ]
+    config_path = next((p for p in candidates if p.exists()), candidates[0])
     CONFIG = load_config(config_path)
 
     raw_text = "\n\n".join(p.read_text() for p in input_paths if p.exists())

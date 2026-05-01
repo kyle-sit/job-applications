@@ -1,20 +1,19 @@
 # Two-Machine Sync Workflow
 
 This pipeline is designed to live on multiple machines, with code shared via
-git and personal configs kept local on each machine.
+git and per-profile content kept local on each machine.
 
 ## What's tracked vs. local
 
 | Tracked in git                          | Machine-local (gitignored)         |
 | --------------------------------------- | ---------------------------------- |
-| `pipeline/*.py` (pipeline scripts)      | `config/profile.md`                |
-| `config/*.example.md` and `*.example.json` | `config/search_queries.json`    |
-| `README.md`, `SETUP.md`, `INSTALL_PROMPT.md`, `SYNC.md` | `config/scoring.json` |
-| `scheduled-task-prompt-template.md`     | `data/`                            |
-| `.gitignore`                            | `digest_archive/`                  |
-|                                         | `digest.md`                        |
+| `pipeline/*.py` (pipeline scripts)      | `profiles/<name>/*` (everything inside an active profile) |
+| `profiles/_template/*.example`          | `profiles/<name>/data/`            |
+| `README.md`, `SETUP.md`, `INSTALL_PROMPT.md`, `SYNC.md` | `profiles/<name>/digest.md` |
+| `scheduled-task-prompt-template.md`     | `profiles/<name>/digest_archive/`  |
+| `.gitignore`                            |                                    |
 
-The `.gitignore` is the source of truth — see it for the full list.
+The `.gitignore` is the source of truth — see it for the full pattern.
 
 ## Daily flow on a single machine
 
@@ -25,48 +24,79 @@ git add -A && git commit -m "..."
 git push
 ```
 
-Personal configs are not touched — they stay local.
+Active profile content (`profiles/<name>/`) is not touched — it stays local.
 
-## Bringing personalized configs to a new machine
+## Bringing personalized content to a new machine
 
-The configs are gitignored, so cloning the repo gives you only the `.example`
-templates. To bootstrap a new machine:
+Profiles are gitignored, so cloning the repo gives you only the `_template/`
+files. To bootstrap a profile on a new machine:
 
 ```bash
 git clone https://github.com/kyle-sit/job-applications.git
 cd job-applications
-cp config/profile.md.example          config/profile.md
-cp config/search_queries.json.example config/search_queries.json
-cp config/scoring.json.example        config/scoring.json
+mkdir -p profiles/kyle
+cp profiles/_template/profile.md.example          profiles/kyle/profile.md
+cp profiles/_template/search_queries.json.example profiles/kyle/search_queries.json
+cp profiles/_template/scoring.json.example        profiles/kyle/scoring.json
+cp profiles/_template/linkedin.json.example       profiles/kyle/linkedin.json
 ```
 
-Then either edit them fresh, or copy them over from your other machine. Two
-common ways to copy:
+Then either edit them fresh, or copy the personalized versions over from your
+other machine. Two common ways to copy:
 
 1. **iCloud / Dropbox / a cloud-synced folder** — keep a copy of your
-   personalized configs in a synced folder, then copy them into `config/` on
-   each machine.
+   personalized profile content in a synced folder, then copy them into
+   `profiles/<name>/` on each machine.
 2. **Manual paste** — open the personalized files on the source machine, paste
-   them into Cowork chat here, and ask me to write them to `config/`.
-3. **scp / AirDrop** — send the three files between machines directly.
+   them into Cowork chat here, and ask Claude to write them to
+   `profiles/<name>/`.
+3. **scp / AirDrop** — send the four files between machines directly.
 
-If you change `config/scoring.json` often and want it synced too, the cleanest
-upgrade is a separate **private** repo or gist for configs. Don't move it into
+If you change configs often and want them synced, the cleanest upgrade is a
+separate **private** repo or gist for profile content. Don't move it into
 this public repo.
+
+## Migrating from the legacy single-profile layout
+
+If you have an older clone with `config/`, `data/`, and `digest_archive/` at
+the project root (single-profile layout), migrate to the multi-profile layout:
+
+```bash
+mkdir -p profiles/kyle/data
+# Move personalized configs (these were gitignored in the old layout too):
+[ -f config/profile.md          ] && mv config/profile.md          profiles/kyle/profile.md
+[ -f config/search_queries.json ] && mv config/search_queries.json profiles/kyle/search_queries.json
+[ -f config/scoring.json        ] && mv config/scoring.json        profiles/kyle/scoring.json
+# Bootstrap a linkedin.json from the template (none existed in legacy layout):
+cp profiles/_template/linkedin.json.example profiles/kyle/linkedin.json
+# Edit linkedin.json: set "enabled": true and "gmail_label": "linkedin-jobs" if
+# you want the legacy LinkedIn behavior preserved.
+
+# Move runtime data:
+[ -d data            ] && mv data/*            profiles/kyle/data/   2>/dev/null
+[ -d digest_archive  ] && mv digest_archive    profiles/kyle/
+[ -f digest.md       ] && mv digest.md         profiles/kyle/
+
+# Clean up the now-empty legacy dirs:
+rmdir data config 2>/dev/null
+```
+
+Then update your scheduled task: it will now run for every profile under
+`profiles/` automatically. No re-install needed unless your MCP UUIDs changed.
 
 ## When the pipeline grows
 
-Anytime you change something tracked (pipeline scripts, `.example` configs,
+Anytime you change something tracked (pipeline scripts, `_template/*.example`,
 docs), commit and push. The other machine pulls and gets it automatically. If
-you change a `.example` template, also remember to re-apply that change to your
-local `config/*.json` or `config/profile.md` (since those don't auto-update).
+you change a `_template/*.example`, also remember to re-apply that change to
+your local `profiles/<name>/*` files (since those don't auto-update).
 
 ## Conflict cases to know
 
 - **You edited a pipeline file on both machines:** standard git merge conflict.
   Resolve in your editor, commit, push.
-- **You added a new file under `data/` or `digest_archive/`:** ignored — won't
-  appear in `git status`. Each machine has its own digest history.
-- **You changed the scoring keys in `scoring.json.example`:** you need to
-  manually merge those changes into your local `config/scoring.json` on each
-  machine. Check `git diff HEAD~1 -- config/scoring.json.example` after a pull.
+- **You added a new profile or runtime data:** ignored — won't appear in
+  `git status`. Each machine has its own profiles and digest history.
+- **You changed scoring keys in `scoring.json.example`:** you need to manually
+  merge those changes into each profile's `scoring.json` on each machine.
+  Check `git diff HEAD~1 -- profiles/_template/scoring.json.example` after a pull.

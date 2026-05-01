@@ -1,12 +1,7 @@
-# --- Personal config (machine-local; copy from *.example and personalize) ---
-config/profile.md
-config/search_queries.json
-config/scoring.json
-
-# --- Runtime data and output ---
-data/
-digest_archive/
-digest.md
+# --- Per-profile content (machine-local; bootstrap from profiles/_template/) ---
+# Ignore everything under profiles/ except the _template dir.
+profiles/*
+!profiles/_template/
 
 # --- Python ---
 __pycache__/
