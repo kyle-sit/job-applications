@@ -33,8 +33,13 @@ Concatenate every search response's "result" field (with blank lines between) an
 
 # Step 3 — Dice searches
 Same role × location matrix. For each call to `mcp__{DICE_MCP_ID}__search_jobs`:
-- For specific cities: pass `keyword`, `location`, `employment_types=["FULLTIME"]`, `jobs_per_page=15`
-- For "remote" locations: pass `keyword`, `employment_types=["FULLTIME"]`, `workplace_types=["Remote"]`, `jobs_per_page=15` (omit location)
+- For specific cities: pass `keyword`, `location`, `employment_types=["FULLTIME"]`, `posted_date="THREE"`, `jobs_per_page=15`
+- For "remote" locations: pass `keyword`, `employment_types=["FULLTIME"]`, `workplace_types=["Remote"]`, `posted_date="THREE"`, `jobs_per_page=15` (omit location)
+
+`posted_date="THREE"` bounds Dice to listings posted in the last 3 days. Valid
+values are `"ONE"`, `"THREE"`, `"SEVEN"`. parse_and_score.py also enforces a
+recency backstop (see `recency.max_days_by_source` in scoring.json) — keep both
+in sync if you change the window.
 
 Stay under Dice's 200 req/min limit — split into two batches with `sleep 30` between if needed.
 

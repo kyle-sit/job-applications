@@ -69,6 +69,15 @@ DEFAULT_CONFIG = {
         ],
         "stale_after_days": 365,
         "stale_penalty": -2,
+        # Hard recency cutoff per source (days). Jobs older than the listed value
+        # for their source are dropped before scoring. Sources NOT listed have no
+        # cutoff (e.g. LinkedIn, where posted_on is always the run date).
+        "max_days_by_source": {
+            "Indeed": 7,
+            "Dice": 3,
+        },
+        # If a job has no parseable posted_on date, drop it (True) or keep it (False).
+        "drop_if_no_date": False,
     },
     "location": {
         "preferred": [
@@ -182,6 +191,23 @@ def dedupe(jobs):
 def passes_salary_floor(job):
     """Pass if upper-bound is unknown OR upper-bound >= floor."""
     return job["comp_high"] is None or job["comp_high"] >= CONFIG["salary_floor"]
+
+
+def passes_recency(job, today):
+    """Pass if the job is within its source's max_days window. Sources without
+    a configured cutoff always pass. Behavior on missing posted_dt is governed
+    by recency.drop_if_no_date.
+    """
+    cfg = CONFIG.get("recency", {}) or {}
+    max_by_source = cfg.get("max_days_by_source") or {}
+    source = job.get("source", "Indeed")
+    max_days = max_by_source.get(source)
+    if max_days is None:
+        return True  # no cutoff configured for this source
+    if job.get("posted_dt") is None:
+        return not cfg.get("drop_if_no_date", False)
+    days = (today - job["posted_dt"]).days
+    return days <= max_days
 
 
 # ---------- Scoring ----------
@@ -355,7 +381,8 @@ def main():
     for j in all_jobs:
         j["source"] = detect_source(j["job_id"])
     deduped = dedupe(all_jobs)
-    filtered = [j for j in deduped if passes_salary_floor(j)]
+    after_salary = [j for j in deduped if passes_salary_floor(j)]
+    filtered = [j for j in after_salary if passes_recency(j, today)]
 
     # Track seen jobs across runs
     seen_data = {}
@@ -390,11 +417,17 @@ def main():
         src_counts[j.get("source", "Indeed")] = src_counts.get(j.get("source", "Indeed"), 0) + 1
     src_summary = ", ".join(f"{n} {s}" for s, n in sorted(src_counts.items()))
 
+    # Pretty-print the per-source recency cutoff for the header (e.g. "Indeed≤7d, Dice≤3d").
+    rec_caps = (CONFIG.get("recency", {}) or {}).get("max_days_by_source") or {}
+    rec_summary = ", ".join(f"{src}≤{d}d" for src, d in sorted(rec_caps.items())) if rec_caps else "none"
+
     lines = [
         f"# Daily Job Digest — {today.strftime('%A, %B %d, %Y')}",
         "",
         f"_Sources: {src_summary or 'none'} · salary floor ${CONFIG['salary_floor']:,} · "
-        f"{len(all_jobs)} raw → {len(deduped)} unique → {len(filtered)} above salary floor · "
+        f"recency: {rec_summary} · "
+        f"{len(all_jobs)} raw → {len(deduped)} unique → {len(after_salary)} above salary floor "
+        f"→ {len(filtered)} within recency · "
         f"**{len(new_hashes)} new since last run**_",
         "",
         "---",
@@ -434,7 +467,8 @@ def main():
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines))
-    print(f"raw={len(all_jobs)} unique={len(deduped)} kept={len(filtered)} new={len(new_hashes)}",
+    print(f"raw={len(all_jobs)} unique={len(deduped)} after_salary={len(after_salary)} "
+          f"kept={len(filtered)} new={len(new_hashes)}",
           file=sys.stderr)
     print(f"wrote: {out_path}", file=sys.stderr)
     if config_path.exists():
