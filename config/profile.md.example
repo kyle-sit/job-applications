@@ -1,0 +1,27 @@
+# Job Search Profile
+
+> **Edit this file with your own background and target roles.** The pipeline
+> uses it to give Claude context when summarizing job descriptions and ranking
+> matches. The more specific you are, the better the matching.
+
+## Background
+- **Current role:** {{your current job title and company, e.g. "Marketing Manager at Acme Corp"}}
+- **Total experience:** {{years and a one-line summary, e.g. "8 years across B2B SaaS marketing"}}
+- **Education:** {{degree, school, year}}
+
+## Target roles
+List the role titles and levels you're targeting. Be inclusive — the pipeline
+runs a separate search per role. Examples:
+- {{Senior Marketing Manager}}
+- {{Director of Marketing}}
+- {{Head of Growth}}
+
+## Core skills / specialties
+What you bring to a role — used by the scorer to weight title relevance.
+Examples: `B2B demand gen`, `SEO`, `paid acquisition`, `Hubspot`, `lifecycle marketing`.
+
+## Search constraints
+- **Locations:** {{e.g. New York, NY · Remote (US) · Boston, MA}}
+- **Salary floor:** {{e.g. $130,000 base — filters out junior roles}}
+- **Job type:** {{Full-time / Contract / Either}}
+- **Anything else:** {{e.g. "must offer health benefits", "no agencies", etc.}}

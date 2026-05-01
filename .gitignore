@@ -1,0 +1,29 @@
+# --- Personal config (machine-local; copy from *.example and personalize) ---
+config/profile.md
+config/search_queries.json
+config/scoring.json
+
+# --- Runtime data and output ---
+data/
+digest_archive/
+digest.md
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# --- macOS ---
+.DS_Store
+
+# --- Editors ---
+.vscode/
+.idea/
+*.swp
+
+# --- Secrets / env ---
+.env
+.env.local
+*.pem

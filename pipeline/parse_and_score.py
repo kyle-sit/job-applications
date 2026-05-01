@@ -1,0 +1,445 @@
+#!/usr/bin/env python3
+"""
+Job Pipeline — Parse, dedupe, score, and rank job listings from multiple sources.
+
+Input files: concatenated markdown blocks in the format Indeed/Dice/LinkedIn
+parsers produce. Source is auto-detected from each `job_id` prefix:
+  hn-       → Hacker News
+  dice-     → Dice
+  linkedin- → LinkedIn
+  (no prefix) → Indeed
+
+Output: a ranked digest as Markdown.
+
+Scoring rules are tunable via a JSON config — looked up by default at
+`<digest_dir>/config/scoring.json`. If missing, sensible defaults are used.
+See DEFAULT_CONFIG below for the schema and ship a `config/scoring.json` to
+override any subset.
+
+Usage:
+    parse_and_score.py <output_digest> <seen_jobs_json> <input_file_1> [input_file_2 ...]
+"""
+
+import copy
+import json
+import re
+import sys
+from datetime import datetime
+from pathlib import Path
+
+HOURS_PER_YEAR = 2080  # for hourly → annual conversion
+
+# ---------- Default scoring config ----------
+DEFAULT_CONFIG = {
+    "salary_floor": 150_000,
+    "tiers": {"strong_min": 17, "worth_a_look_min": 12},
+    "title": {
+        "senior_tokens": ["senior", r"sr\.?", "staff", "principal", "lead", "ii", "iii"],
+        "senior_bonus": 5,
+        "junior_tokens": [r"junior", r"jr\.?", "associate", "entry", "intern", r"\bi\b"],
+        "junior_penalty": -5,
+        "primary_role_substrings": ["software engineer", "software developer", " sde", " swe"],
+        "primary_role_bonus": 3,
+        "secondary_role_substrings": ["engineer", "developer"],
+        "secondary_role_bonus": 1,
+        "specialty_groups": [
+            {"name": "fullstack", "substrings": ["full stack", "fullstack", "full-stack"], "bonus": 2},
+            {"name": "frontend", "substrings": ["front end", "frontend", "front-end"], "bonus": 2},
+            {"name": "backend", "substrings": ["back end", "backend", "back-end"], "bonus": 2},
+        ],
+        "tech_keywords": ["react", "typescript", "java", "kotlin", "aws"],
+        "tech_max_bonus": 3,
+    },
+    "salary": {
+        "tiers": [
+            {"min": 300_000, "score": 5},
+            {"min": 250_000, "score": 4},
+            {"min": 200_000, "score": 3},
+            {"min": 175_000, "score": 2},
+            {"min": 150_000, "score": 1},
+        ]
+    },
+    "recency": {
+        "tiers_days": [
+            {"max_days": 7, "score": 5},
+            {"max_days": 14, "score": 4},
+            {"max_days": 30, "score": 3},
+            {"max_days": 60, "score": 2},
+            {"max_days": 90, "score": 1},
+        ],
+        "stale_after_days": 365,
+        "stale_penalty": -2,
+    },
+    "location": {
+        "preferred": [
+            {"name": "Remote", "substrings": ["remote"], "score": 3},
+            {"name": "SF Bay Area", "substrings": ["san francisco", "sf bay", "san mateo",
+                "south san francisco", "foster city", "palo alto", "san carlos", "alameda"], "score": 3},
+            {"name": "San Diego", "substrings": ["san diego", "poway"], "score": 2},
+        ]
+    },
+}
+
+# Module-level config — populated from JSON in main(), replaces hardcoded constants
+CONFIG = copy.deepcopy(DEFAULT_CONFIG)
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Merge override into base recursively. Lists are replaced wholesale."""
+    for k, v in override.items():
+        if isinstance(v, dict) and isinstance(base.get(k), dict):
+            base[k] = _deep_merge(base[k], v)
+        else:
+            base[k] = v
+    return base
+
+
+def load_config(config_path: Path) -> dict:
+    """Load scoring config from JSON, falling back to defaults for missing keys."""
+    if not config_path.exists():
+        return copy.deepcopy(DEFAULT_CONFIG)
+    user = json.loads(config_path.read_text())
+    return _deep_merge(copy.deepcopy(DEFAULT_CONFIG), user)
+
+
+# ---------- Parsing ----------
+def parse_compensation(comp_str: str):
+    """Return (low, high) annualized salary, or (None, None) if unparseable."""
+    if not comp_str or comp_str.strip().upper() == "N/A":
+        return None, None
+    if comp_str.strip() in ("$0 a year", "$0"):
+        return None, None
+    nums = re.findall(r"\$?([\d,]+(?:\.\d+)?)", comp_str)
+    if not nums:
+        return None, None
+    vals = [float(n.replace(",", "")) for n in nums]
+    if "hour" in comp_str.lower():
+        vals = [v * HOURS_PER_YEAR for v in vals]
+    if len(vals) == 1:
+        return vals[0], vals[0]
+    return min(vals), max(vals)
+
+
+def parse_date(date_str: str):
+    try:
+        return datetime.strptime(date_str.strip(), "%B %d, %Y")
+    except (ValueError, AttributeError):
+        return None
+
+
+def get_job_hash(job_id: str) -> str:
+    """The unique hash sits at the end of job_id, before any '---' suffix."""
+    clean = job_id.split("---")[0]
+    parts = clean.rsplit("-", 1)
+    return parts[-1].strip() if parts else clean.strip()
+
+
+JOB_BLOCK_RE = re.compile(r"\*\*Job Title:\*\*[\s\S]+?(?=\*\*Job Title:\*\*|\Z)")
+FIELD_RE = lambda name: re.compile(rf"\*\*{name}:\*\*\s*(.+?)(?=\n\s*\*\*|\Z)", re.DOTALL)
+
+
+def parse_jobs(text: str):
+    jobs = []
+    for block in JOB_BLOCK_RE.findall(text):
+        def f(name):
+            m = FIELD_RE(name).search(block)
+            return m.group(1).strip() if m else ""
+        title = f("Job Title")
+        jid = f("Job Id")
+        if not title or not jid:
+            continue
+        comp_str = f("Compensation")
+        low, high = parse_compensation(comp_str)
+        jobs.append({
+            "title": title,
+            "job_id": jid,
+            "hash": get_job_hash(jid),
+            "company": f("Company"),
+            "location": f("Location"),
+            "posted_on": f("Posted on"),
+            "posted_dt": parse_date(f("Posted on")),
+            "job_type": f("Job Type"),
+            "compensation": comp_str,
+            "comp_low": low,
+            "comp_high": high,
+            "url": f("View Job URL"),
+            "summary": f("Summary"),
+        })
+    return jobs
+
+
+def dedupe(jobs):
+    """Dedupe by job hash. Prefer the entry with the richest comp string."""
+    by_hash = {}
+    for j in jobs:
+        h = j["hash"]
+        if h not in by_hash or len(j["compensation"]) > len(by_hash[h]["compensation"]):
+            by_hash[h] = j
+    return list(by_hash.values())
+
+
+# ---------- Filtering ----------
+def passes_salary_floor(job):
+    """Pass if upper-bound is unknown OR upper-bound >= floor."""
+    return job["comp_high"] is None or job["comp_high"] >= CONFIG["salary_floor"]
+
+
+# ---------- Scoring ----------
+def has_token(text: str, token: str) -> bool:
+    return bool(re.search(rf"\b{token}\b", text, re.IGNORECASE))
+
+
+def score_title(title: str):
+    cfg = CONFIG["title"]
+    notes = []
+    score = 0
+    if any(has_token(title, t) for t in cfg["senior_tokens"]):
+        score += cfg["senior_bonus"]
+        notes.append(f"senior+{cfg['senior_bonus']}")
+    if any(has_token(title, t) for t in cfg["junior_tokens"]):
+        score += cfg["junior_penalty"]
+        notes.append(f"junior{cfg['junior_penalty']}")
+    t = title.lower()
+    if any(s in t for s in cfg["primary_role_substrings"]):
+        score += cfg["primary_role_bonus"]
+        notes.append(f"role+{cfg['primary_role_bonus']}")
+    elif any(s in t for s in cfg["secondary_role_substrings"]):
+        score += cfg["secondary_role_bonus"]
+        notes.append(f"role+{cfg['secondary_role_bonus']}")
+    for spec in cfg["specialty_groups"]:
+        if any(s in t for s in spec["substrings"]):
+            score += spec["bonus"]
+            notes.append(f"{spec['name']}+{spec['bonus']}")
+    tech_hits = sum(1 for kw in cfg["tech_keywords"] if has_token(title, kw))
+    if tech_hits:
+        bonus = min(tech_hits, cfg["tech_max_bonus"])
+        score += bonus
+        notes.append(f"tech+{bonus}")
+    return score, notes
+
+
+def score_salary(high):
+    if high is None:
+        return 0
+    for tier in CONFIG["salary"]["tiers"]:
+        if high >= tier["min"]:
+            return tier["score"]
+    return 0
+
+
+def score_recency(posted_dt, today):
+    if posted_dt is None:
+        return 0
+    days = (today - posted_dt).days
+    if days < 0:
+        # future-dated — treat as freshest
+        return CONFIG["recency"]["tiers_days"][0]["score"]
+    cfg = CONFIG["recency"]
+    for tier in cfg["tiers_days"]:
+        if days <= tier["max_days"]:
+            return tier["score"]
+    if days > cfg.get("stale_after_days", 365):
+        return cfg.get("stale_penalty", -2)
+    return 0
+
+
+def score_location(location: str):
+    l = location.lower()
+    for pref in CONFIG["location"]["preferred"]:
+        if any(s in l for s in pref["substrings"]):
+            return pref["score"]
+    return 0
+
+
+def score_job(job, today):
+    title_score, title_notes = score_title(job["title"])
+    sal_score = score_salary(job["comp_high"])
+    rec_score = score_recency(job["posted_dt"], today)
+    loc_score = score_location(job["location"])
+    return {
+        "total": title_score + sal_score + rec_score + loc_score,
+        "title": title_score,
+        "title_notes": title_notes,
+        "salary": sal_score,
+        "recency": rec_score,
+        "location": loc_score,
+    }
+
+
+# ---------- Rendering ----------
+def fmt_comp(job):
+    if job["comp_high"] is None:
+        return "_comp N/A_"
+    if job["comp_low"] == job["comp_high"]:
+        return f"${int(job['comp_low']):,}"
+    return f"${int(job['comp_low']):,} – ${int(job['comp_high']):,}"
+
+
+def fmt_age(posted_dt, today):
+    if not posted_dt:
+        return "unknown date"
+    days = (today - posted_dt).days
+    if days < 0:
+        return "future-dated"
+    if days == 0:
+        return "today"
+    if days == 1:
+        return "1 day ago"
+    if days < 30:
+        return f"{days} days ago"
+    if days < 60:
+        return f"{days // 7} weeks ago"
+    if days < 365:
+        return f"{days // 30} months ago"
+    return f"{days // 365} year(s) ago"
+
+
+def render_job(j, new_hashes, today, include_summary=False):
+    new_tag = " 🆕" if j["hash"] in new_hashes else ""
+    s = j["score"]
+    notes = ", ".join(s["title_notes"]) if s["title_notes"] else ""
+    source = j.get("source", "Indeed")
+    out = (
+        f"### [{j['title']}]({j['url']}){new_tag}\n"
+        f"**{j['company']}** · {j['location']} · {fmt_comp(j)} · "
+        f"_{source} · posted {fmt_age(j['posted_dt'], today)}_\n\n"
+        f"`Score: {s['total']}` "
+        f"(title {s['title']}{f' [{notes}]' if notes else ''}, "
+        f"salary {s['salary']}, recency {s['recency']}, location {s['location']})\n"
+    )
+
+    summary = (j.get("summary") or "").strip()
+    show_summary = include_summary or source == "LinkedIn"
+
+    if show_summary:
+        if summary:
+            out += f"\n> {summary}\n"
+        elif source == "Indeed":
+            out += f"\n<!--ENRICH_INDEED:{j['hash']}-->\n"
+        elif source == "LinkedIn":
+            out += f"\n<!--ENRICH_LINKEDIN:{j['hash']}-->\n"
+    return out
+
+
+SOURCE_BY_PREFIX = [
+    ("hn-", "HN"),
+    ("dice-", "Dice"),
+    ("linkedin-", "LinkedIn"),
+]
+
+
+def detect_source(job_id: str) -> str:
+    for prefix, name in SOURCE_BY_PREFIX:
+        if job_id.startswith(prefix):
+            return name
+    return "Indeed"
+
+
+def main():
+    if len(sys.argv) < 4:
+        print(__doc__, file=sys.stderr)
+        sys.exit(1)
+    out_path = Path(sys.argv[1])
+    seen_path = Path(sys.argv[2])
+    input_paths = [Path(p) for p in sys.argv[3:]]
+
+    # Load tunable scoring config (auto-detect at <digest_dir>/config/scoring.json)
+    global CONFIG
+    config_path = out_path.parent / "config" / "scoring.json"
+    CONFIG = load_config(config_path)
+
+    raw_text = "\n\n".join(p.read_text() for p in input_paths if p.exists())
+    today = datetime.now()
+
+    all_jobs = parse_jobs(raw_text)
+    for j in all_jobs:
+        j["source"] = detect_source(j["job_id"])
+    deduped = dedupe(all_jobs)
+    filtered = [j for j in deduped if passes_salary_floor(j)]
+
+    # Track seen jobs across runs
+    seen_data = {}
+    if seen_path and seen_path.exists():
+        seen_data = json.loads(seen_path.read_text())
+    new_hashes = set()
+    today_str = today.strftime("%Y-%m-%d")
+    for j in filtered:
+        if j["hash"] not in seen_data:
+            seen_data[j["hash"]] = today_str
+            new_hashes.add(j["hash"])
+    if seen_path:
+        seen_path.parent.mkdir(parents=True, exist_ok=True)
+        seen_path.write_text(json.dumps(seen_data, indent=2))
+
+    for j in filtered:
+        j["score"] = score_job(j, today)
+
+    filtered.sort(key=lambda j: (
+        -j["score"]["total"],
+        -(j["posted_dt"].timestamp() if j["posted_dt"] else 0),
+    ))
+
+    strong_min = CONFIG["tiers"]["strong_min"]
+    worth_min = CONFIG["tiers"]["worth_a_look_min"]
+    high = [j for j in filtered if j["score"]["total"] >= strong_min]
+    med = [j for j in filtered if worth_min <= j["score"]["total"] < strong_min]
+    low = [j for j in filtered if j["score"]["total"] < worth_min]
+
+    src_counts = {}
+    for j in filtered:
+        src_counts[j.get("source", "Indeed")] = src_counts.get(j.get("source", "Indeed"), 0) + 1
+    src_summary = ", ".join(f"{n} {s}" for s, n in sorted(src_counts.items()))
+
+    lines = [
+        f"# Daily Job Digest — {today.strftime('%A, %B %d, %Y')}",
+        "",
+        f"_Sources: {src_summary or 'none'} · salary floor ${CONFIG['salary_floor']:,} · "
+        f"{len(all_jobs)} raw → {len(deduped)} unique → {len(filtered)} above salary floor · "
+        f"**{len(new_hashes)} new since last run**_",
+        "",
+        "---",
+        "",
+    ]
+    if high:
+        lines.append("## 🟢 Strong Matches\n")
+        lines += [render_job(j, new_hashes, today, include_summary=True) for j in high]
+    if med:
+        lines.append("\n## 🟡 Worth a Look\n")
+        lines += [render_job(j, new_hashes, today) for j in med]
+    if low:
+        lines.append("\n## ⚪ Lower Priority\n")
+        lines += [render_job(j, new_hashes, today) for j in low]
+    if not filtered:
+        lines.append("_No matches passed the filter today._\n")
+
+    # Indeed strong matches that need a get_job_details enrichment
+    needs_indeed = [
+        {"hash": j["hash"], "job_id": j["job_id"], "title": j["title"],
+         "company": j["company"], "url": j["url"]}
+        for j in high
+        if j.get("source", "Indeed") == "Indeed" and not (j.get("summary") or "").strip()
+    ]
+    (out_path.parent / "needs_enrichment.json").write_text(json.dumps(needs_indeed, indent=2))
+
+    # LinkedIn jobs that didn't get a summary in pre-score Chrome enrichment
+    needs_linkedin = [
+        {"hash": j["hash"], "job_id": j["job_id"], "title": j["title"],
+         "company": j["company"], "url": j["url"]}
+        for j in filtered
+        if j.get("source") == "LinkedIn" and not (j.get("summary") or "").strip()
+    ]
+    (out_path.parent / "needs_enrichment_linkedin.json").write_text(
+        json.dumps(needs_linkedin, indent=2)
+    )
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(lines))
+    print(f"raw={len(all_jobs)} unique={len(deduped)} kept={len(filtered)} new={len(new_hashes)}",
+          file=sys.stderr)
+    print(f"wrote: {out_path}", file=sys.stderr)
+    if config_path.exists():
+        print(f"using scoring config: {config_path}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

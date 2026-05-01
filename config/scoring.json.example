@@ -1,0 +1,76 @@
+{
+  "_about": "Tunable scoring rules. Edit any value to tune ranking for your field. Missing keys fall back to defaults in pipeline/parse_and_score.py.",
+  "_about_tiers": "Total score determines tier: >= strong_min → Strong Matches; >= worth_a_look_min → Worth a Look; below → Lower Priority. Max possible total is roughly 25 (title 16 + salary 5 + recency 5 + location 3).",
+
+  "salary_floor": 150000,
+  "_salary_floor_help": "Discards listings whose UPPER-BOUND annual comp is below this. Set to your minimum acceptable pay. Listings with no posted salary are kept and flagged.",
+
+  "tiers": {
+    "strong_min": 17,
+    "worth_a_look_min": 12
+  },
+
+  "title": {
+    "_about": "Bonuses applied to a job based on words in its title.",
+
+    "senior_tokens": ["senior", "sr\\.?", "staff", "principal", "lead", "ii", "iii"],
+    "senior_bonus": 5,
+    "_senior_help": "Tokens that signal senior-level. For non-software fields, customize to match your industry's level conventions (e.g. 'director', 'vp', 'principal').",
+
+    "junior_tokens": ["junior", "jr\\.?", "associate", "entry", "intern", "\\bi\\b"],
+    "junior_penalty": -5,
+    "_junior_help": "Tokens that signal junior-level. Adjust per field.",
+
+    "primary_role_substrings": ["software engineer", "software developer", " sde", " swe"],
+    "primary_role_bonus": 3,
+    "_primary_role_help": "Exact role names — top match for what you're targeting. Examples: ['marketing manager', 'product manager', 'data scientist'].",
+
+    "secondary_role_substrings": ["engineer", "developer"],
+    "secondary_role_bonus": 1,
+    "_secondary_role_help": "Adjacent roles that you'd consider. Lower bonus than primary.",
+
+    "specialty_groups": [
+      {"name": "fullstack", "substrings": ["full stack", "fullstack", "full-stack"], "bonus": 2},
+      {"name": "frontend", "substrings": ["front end", "frontend", "front-end"], "bonus": 2},
+      {"name": "backend", "substrings": ["back end", "backend", "back-end"], "bonus": 2}
+    ],
+    "_specialty_groups_help": "Sub-specialties within your field. Example for marketing: [{name: 'demand_gen', substrings: ['demand gen', 'growth'], bonus: 2}, {name: 'content', substrings: ['content marketing'], bonus: 2}].",
+
+    "tech_keywords": ["react", "typescript", "java", "kotlin", "aws"],
+    "tech_max_bonus": 3,
+    "_tech_keywords_help": "Skill/tool keywords that strongly match your background. Each match gives +1, capped at tech_max_bonus. For marketing: ['hubspot', 'salesforce', 'marketo']. For sales: ['salesforce', 'outreach']."
+  },
+
+  "salary": {
+    "_about": "Bonus points based on the upper bound of the listed salary range.",
+    "tiers": [
+      {"min": 300000, "score": 5},
+      {"min": 250000, "score": 4},
+      {"min": 200000, "score": 3},
+      {"min": 175000, "score": 2},
+      {"min": 150000, "score": 1}
+    ]
+  },
+
+  "recency": {
+    "_about": "Newer listings score higher. Older than stale_after_days gets a penalty.",
+    "tiers_days": [
+      {"max_days": 7, "score": 5},
+      {"max_days": 14, "score": 4},
+      {"max_days": 30, "score": 3},
+      {"max_days": 60, "score": 2},
+      {"max_days": 90, "score": 1}
+    ],
+    "stale_after_days": 365,
+    "stale_penalty": -2
+  },
+
+  "location": {
+    "_about": "Match against the job's listed location. Higher score = stronger preference.",
+    "preferred": [
+      {"name": "Remote", "substrings": ["remote"], "score": 3},
+      {"name": "REPLACE-WITH-CITY-1", "substrings": ["lowercase city name", "alternate names"], "score": 3},
+      {"name": "REPLACE-WITH-CITY-2", "substrings": ["lowercase city name"], "score": 2}
+    ]
+  }
+}

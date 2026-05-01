@@ -1,0 +1,21 @@
+{
+  "_about": "Search matrix for the daily pipeline. The agent runs every (role × location) combination on each source (Indeed, Dice). Edit these to match your target field.",
+  "role_queries": [
+    "REPLACE-WITH-YOUR-ROLE-1",
+    "REPLACE-WITH-YOUR-ROLE-2",
+    "REPLACE-WITH-YOUR-ROLE-3"
+  ],
+  "_role_queries_examples": {
+    "software_engineering": ["Software Engineer", "Senior Software Engineer", "Staff Software Engineer", "Full Stack Engineer", "Backend Engineer"],
+    "marketing": ["Marketing Manager", "Senior Marketing Manager", "Director of Marketing", "Head of Growth", "Demand Gen Manager"],
+    "product_management": ["Product Manager", "Senior Product Manager", "Group Product Manager", "Director of Product", "Principal Product Manager"],
+    "data_science": ["Data Scientist", "Senior Data Scientist", "Staff Data Scientist", "ML Engineer", "Data Science Manager"]
+  },
+  "locations": [
+    "REPLACE-WITH-CITY-1, ST",
+    "REPLACE-WITH-CITY-2, ST",
+    "remote"
+  ],
+  "country_code": "US",
+  "job_type": "fulltime"
+}
