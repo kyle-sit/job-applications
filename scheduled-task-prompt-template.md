@@ -38,7 +38,7 @@ starting with `_` or `.` is skipped (so `_template` is never run).
 
 If the list is empty, exit with: `"No active profiles in {PROJECT_DIR}/profiles."`
 
-# Step 3 — For EACH profile, run Steps 3a–3j sequentially
+# Step 3 — For EACH profile, run Steps 3a–3l sequentially
 
 Process profiles one at a time. Between profiles, sleep 30 seconds before the
 next profile's Dice calls to stay well under Dice's 200-req/min limit.
@@ -49,6 +49,16 @@ subdirs once per profile:
 mkdir -p $PROFILE_DIR/data/raw_searches $PROFILE_DIR/data/dice_raw \
          $PROFILE_DIR/data/linkedin_raw $PROFILE_DIR/digest_archive
 ```
+
+**Source-status tracking.** Throughout this profile's run, maintain a JSON
+object in memory that records each source's status, e.g. `{"indeed": "ok",
+"dice": "rate_limited", "linkedin": "ok"}`. If a source errors out
+(rate-limited, no connector, no creds, parser failure, etc.), set its status
+to a short reason string like `"rate_limited"`, `"chrome_unavailable"`, or
+`"gmail_error"` and STOP making further calls for that source for this
+profile — but continue with the other sources. At the end of the profile run
+(Step 3j below), write this object to `$PROFILE_DIR/data/source_status_{TODAY}.json`
+so the email digest can render a banner about which sources were missing.
 
 ## Step 3a — Read this profile's search config
 Read `$PROFILE_DIR/search_queries.json` for `role_queries` and `locations`. If
@@ -62,21 +72,39 @@ For every (role × location) pair, call `mcp__{INDEED_MCP_ID}__search_jobs` in p
   - `country_code`: from config (default "US")
   - `job_type`: from config (default "fulltime")
 
+Indeed has historically tolerated parallel bursts; if you see rate-limit
+errors here, fall back to the same serial-with-`sleep 1` pattern documented
+for Dice in Step 3c.
+
 Concatenate every search response's "result" field (with blank lines between) and Write to:
   `$PROFILE_DIR/data/raw_searches/{TODAY}.txt`
+
+If every Indeed call errored out, skip writing the file and set
+source-status `"indeed": "<short reason>"`. Otherwise set `"indeed": "ok"`.
 
 ## Step 3c — Dice searches (this profile)
 Same role × location matrix. For each call to `mcp__{DICE_MCP_ID}__search_jobs`:
 - For specific cities: pass `keyword`, `location`, `employment_types=["FULLTIME"]`, `posted_date="THREE"`, `jobs_per_page=15`
 - For "remote" locations: pass `keyword`, `employment_types=["FULLTIME"]`, `workplace_types=["Remote"]`, `posted_date="THREE"`, `jobs_per_page=15` (omit location)
 
-Stay under Dice's 200 req/min limit — split into two batches with `sleep 30` between if needed.
+**Send Dice calls SERIALLY** (one at a time, never in parallel). Between
+calls, run `sleep 1` via bash. Dice's 200 req/min limit is shared across all
+clients of the MCP server (`client: global` in error responses), so even
+modest bursts can trip it. Serial-with-delay is the safe pattern.
+
+**On rate-limit error: stop calling Dice for this profile.** If any Dice call
+returns `Rate limit exceeded` (or any other error), do NOT retry and do NOT
+make further Dice calls in this profile's matrix. Instead:
+1. Set source-status `"dice": "rate_limited"` (or another short reason).
+2. Aggregate the Dice responses you successfully collected so far.
+3. Continue with Step 3d.
 
 `posted_date="THREE"` bounds Dice to listings posted in the last 3 days.
 `parse_and_score.py` also enforces a recency backstop (see `recency.max_days_by_source`
 in scoring.json) — keep both in sync if you change the window.
 
-Combine all Dice responses into one JSON: `{"data": [...all items...]}`. Write to:
+Combine the successful Dice responses into one JSON: `{"data": [...all items...]}`.
+If at least one call succeeded, write to:
   `$PROFILE_DIR/data/dice_raw/{TODAY}.json`
 
 Then normalize:
@@ -86,7 +114,9 @@ Then normalize:
     $PROFILE_DIR/data/dice_raw/{TODAY}.txt
   ```
 
-If Dice errors, skip silently for this profile.
+If zero Dice calls succeeded, skip writing the file and set source-status
+`"dice": "rate_limited"` (or whatever error you saw). The downstream parser
+in Step 3f handles missing source files gracefully.
 
 ## Step 3d — LinkedIn email alerts (this profile, gated by linkedin.json)
 Read `$PROFILE_DIR/linkedin.json` if it exists. If the file is missing, or
@@ -204,13 +234,30 @@ Write to `/tmp/<profile>_job_enrichments_linkedin_{TODAY}.json`.
     /tmp/<profile>_job_enrichments_{TODAY}.json
   ```
 
-## Step 3j — Archive (this profile)
+## Step 3j — Write source-status snapshot (this profile)
+Persist the source-status object (built throughout Steps 3b–3h) to:
+  `$PROFILE_DIR/data/source_status_{TODAY}.json`
+
+Each key is a source name (`indeed`, `dice`, `linkedin`, etc.) and each value
+is the string `"ok"` or a short reason if that source wasn't fully successful
+(e.g. `"rate_limited"`, `"chrome_unavailable"`, `"gmail_error"`,
+`"label_not_set"`). The email-send script reads this file and prepends a
+banner if any value is non-`"ok"`.
+
+Example:
+  ```bash
+  cat > $PROFILE_DIR/data/source_status_{TODAY}.json << 'EOF'
+  {"indeed": "ok", "dice": "rate_limited", "linkedin": "ok"}
+  EOF
+  ```
+
+## Step 3k — Archive (this profile)
   ```bash
   cp $PROFILE_DIR/digest.md \
      $PROFILE_DIR/digest_archive/{TODAY}.md
   ```
 
-## Step 3k — Send digest email (this profile, gated by email.json)
+## Step 3l — Send digest email (this profile, gated by email.json)
   ```bash
   python3 {PROJECT_DIR}/pipeline/send_digest_email.py \
     $PROFILE_DIR \
@@ -223,7 +270,7 @@ fall in the configured tiers. SMTP errors exit non-zero — log them and continu
 to the next profile (don't abort the whole run).
 
 ## Between profiles
-After completing 3a–3j for one profile, sleep 30 seconds before starting the
+After completing 3a–3l for one profile, sleep 30 seconds before starting the
 next profile's Step 3c (Dice rate-limit safety):
   ```bash
   sleep 30

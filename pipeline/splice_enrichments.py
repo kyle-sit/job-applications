@@ -19,7 +19,7 @@ import re
 import sys
 from pathlib import Path
 
-MARKER_RE = re.compile(r"<!--ENRICH_(?:INDEED|LINKEDIN|DICE):([a-zA-Z0-9]+)-->")
+MARKER_RE = re.compile(r"<!--ENRICH_(?:INDEED|LINKEDIN|DICE):([\w-]+)-->")
 
 
 def main():

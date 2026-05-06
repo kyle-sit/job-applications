@@ -138,7 +138,7 @@ TIER_RENDER = {
 
 
 def render_html(profile_name: str, header_title: str, header_summary: str,
-                tier_blocks: dict, total: int) -> str:
+                tier_blocks: dict, total: int, source_notice_html: str = "") -> str:
     css = (
         "body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;"
         "color:#222;line-height:1.45;max-width:760px;margin:24px auto;padding:0 16px;}"
@@ -162,6 +162,8 @@ def render_html(profile_name: str, header_title: str, header_summary: str,
     ]
     if header_summary:
         parts.append(f'<div class="sub">{header_summary}</div>')
+    if source_notice_html:
+        parts.append(source_notice_html)
 
     for tier_key, blocks in tier_blocks.items():
         if not blocks:
@@ -201,10 +203,12 @@ def render_html(profile_name: str, header_title: str, header_summary: str,
 
 
 def render_plaintext(header_title: str, header_summary: str,
-                     tier_blocks: dict) -> str:
+                     tier_blocks: dict, source_notice_text: str = "") -> str:
     out = [header_title, ""]
     if header_summary:
         out += [header_summary, ""]
+    if source_notice_text:
+        out += [source_notice_text, ""]
     for tier_key, blocks in tier_blocks.items():
         if not blocks:
             continue
@@ -264,7 +268,35 @@ def main():
     selected = {k: all_tiers.get(k, []) for k in tier_keys}
     total = sum(len(b) for b in selected.values())
 
-    if total == 0:
+    # Optional: read source-status notice. Orchestrator writes
+    # data/source_status_<TODAY>.json with {"<source>": "ok"|"<failure_reason>"}.
+    # Any non-"ok" entry is rendered as a banner in the email.
+    source_notice_html = ""
+    source_notice_text = ""
+    today_iso = datetime.now().strftime("%Y-%m-%d")
+    status_path = profile_dir / "data" / f"source_status_{today_iso}.json"
+    if status_path.exists():
+        try:
+            statuses = json.loads(status_path.read_text())
+            failures = [(s, r) for s, r in statuses.items() if r != "ok"]
+            if failures:
+                items = ", ".join(f"{s} ({r})" for s, r in failures)
+                source_notice_html = (
+                    '<div style="background:#fff5e6;border:1px solid #f0b97a;'
+                    'border-radius:6px;padding:10px 14px;margin:12px 0 18px;'
+                    'color:#7a4a00;font-size:13px;">'
+                    f"⚠️ Some sources were unavailable today: <b>{items}</b>. "
+                    "Listings from these sources are not in this digest."
+                    "</div>"
+                )
+                source_notice_text = (
+                    f"NOTE: Some sources were unavailable today: {items}.\n"
+                    "Listings from these sources are not in this digest.\n"
+                )
+        except Exception as e:
+            print(f"Could not read {status_path}: {e}", file=sys.stderr)
+
+    if total == 0 and not source_notice_html:
         print(f"No matches in selected tiers ({tier_keys}); skipping send.", file=sys.stderr)
         return
 
@@ -285,8 +317,14 @@ def main():
     today_str = datetime.now().strftime("%a %b %d")
     subject = f"Job Digest — {today_str} ({counts})"
 
-    html_body = render_html(profile_dir.name, header_title, header_summary, selected, total)
-    plain_body = render_plaintext(header_title, header_summary, selected)
+    html_body = render_html(
+        profile_dir.name, header_title, header_summary, selected, total,
+        source_notice_html=source_notice_html,
+    )
+    plain_body = render_plaintext(
+        header_title, header_summary, selected,
+        source_notice_text=source_notice_text,
+    )
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
