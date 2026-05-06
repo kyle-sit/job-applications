@@ -1,0 +1,12 @@
+{
+  "_about": "Per-profile email-delivery config. The pipeline runs send_digest_email.py after building each profile's digest, sending the selected tiers to recipient_email via Gmail SMTP (credentials in project_root/.env).",
+
+  "enabled": true,
+  "_enabled_help": "Set to false to skip email send for this profile (digest still gets written and archived as markdown).",
+
+  "recipient_email": "REPLACE-WITH-RECIPIENT@example.com",
+  "_recipient_email_help": "The email address that will receive this profile's daily digest. Typically the profile owner's personal email.",
+
+  "tiers": ["strong", "worth_a_look"],
+  "_tiers_help": "Which digest tiers to include in the email. Subset of: 'strong' (score >= strong_min), 'worth_a_look' (between thresholds), 'lower' (below). Default ['strong', 'worth_a_look'] keeps emails focused without cutting off mid-tier roles."
+}

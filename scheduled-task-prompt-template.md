@@ -210,6 +210,18 @@ Write to `/tmp/<profile>_job_enrichments_linkedin_{TODAY}.json`.
      $PROFILE_DIR/digest_archive/{TODAY}.md
   ```
 
+## Step 3k — Send digest email (this profile, gated by email.json)
+  ```bash
+  python3 {PROJECT_DIR}/pipeline/send_digest_email.py \
+    $PROFILE_DIR \
+    {PROJECT_DIR}
+  ```
+
+The script reads `$PROFILE_DIR/email.json` and `{PROJECT_DIR}/.env`. It silently
+skips (exit 0) if email is disabled, the recipient is missing, or no matches
+fall in the configured tiers. SMTP errors exit non-zero — log them and continue
+to the next profile (don't abort the whole run).
+
 ## Between profiles
 After completing 3a–3j for one profile, sleep 30 seconds before starting the
 next profile's Step 3c (Dice rate-limit safety):
