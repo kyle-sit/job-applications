@@ -1,65 +1,47 @@
 #!/usr/bin/env python3
 """
-Send a job-digest email via Gmail SMTP.
+Prepare a job-digest email payload for Gmail-MCP draft creation.
 
 Reads the profile's `digest.md`, extracts the configured tiers, renders an HTML
-email, and sends from the dedicated Gmail (configured via project-root `.env`)
-to the profile's recipient (configured via `<profile>/email.json`).
+email and plaintext alternative, and prints a JSON payload to stdout that the
+scheduled task hands to the Gmail MCP `create_draft` tool.
+
+Replaces send_digest_email.py — does NOT send via SMTP. The send is performed
+by the scheduled task: create_draft via Gmail MCP, then click Send via the
+Claude-in-Chrome MCP.
 
 Usage:
-    send_digest_email.py <profile_dir> <project_root>
+    prepare_digest_email.py <profile_dir> <project_root>
 
-  profile_dir   path to profiles/<name>/
-  project_root  path to the project root (where `.env` lives)
+Output (stdout, JSON):
+    On a real send-worthy run:
+      {
+        "skip": false,
+        "to": ["recipient@example.com"],
+        "subject": "Job Digest — Wed May 06 (12 strong · 8 worth)",
+        "htmlBody": "<html>…</html>",
+        "body": "plaintext fallback…",
+        "total": 20,
+        "subject_marker": "Job Digest — Wed May 06"
+      }
+    On skip (disabled / no recipient / no matches):
+      {"skip": true, "reason": "..."}
 
-Env file format (project_root/.env):
-    SMTP_HOST=smtp.gmail.com
-    SMTP_PORT=465
-    SMTP_USER=dedicated.account@gmail.com
-    SMTP_PASSWORD=xxxxxxxxxxxxxxxx       # 16-char Gmail app password
-    SMTP_FROM_NAME=Job Pipeline          # optional display name
+Exits 0 in both cases. Exits non-zero only on parse / IO errors.
 
-Profile email.json schema:
+Profile email.json schema (unchanged):
     {
+      "enabled": true,
       "recipient_email": "owner@example.com",
-      "tiers": ["strong", "worth_a_look"],   // any subset of strong, worth_a_look, lower
-      "enabled": true
+      "tiers": ["strong", "worth_a_look"]
     }
-
-Exits 0 if the email was sent (or skipped because disabled / no matches).
-Exits non-zero on a real error so the pipeline run knows.
 """
 
 import json
-import os
 import re
-import smtplib
-import ssl
 import sys
 from datetime import datetime
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from pathlib import Path
-
-
-# ---------- .env loader (no external dep) ----------
-def load_env(env_path: Path) -> dict:
-    if not env_path.exists():
-        return {}
-    out = {}
-    for raw in env_path.read_text().splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" not in line:
-            continue
-        k, _, v = line.partition("=")
-        v = v.strip()
-        # Strip matching quotes
-        if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
-            v = v[1:-1]
-        out[k.strip()] = v
-    return out
 
 
 # ---------- Digest parsing ----------
@@ -79,7 +61,6 @@ JOB_BLOCK_RE = re.compile(
 
 
 def split_into_tiers(digest_text: str) -> dict:
-    """Return {tier_key: [block_text, ...]} for whichever tiers appear in the digest."""
     tiers = {}
     matches = list(TIER_HEADER_RE.finditer(digest_text))
     for i, m in enumerate(matches):
@@ -90,7 +71,6 @@ def split_into_tiers(digest_text: str) -> dict:
         body_start = m.end()
         body_end = matches[i + 1].start() if i + 1 < len(matches) else len(digest_text)
         body = digest_text[body_start:body_end]
-        # Split on '### ' headers (each is one job)
         blocks = re.split(r"(?=^### )", body, flags=re.MULTILINE)
         blocks = [b.strip() for b in blocks if b.strip()]
         tiers[tier_key] = blocks
@@ -98,7 +78,6 @@ def split_into_tiers(digest_text: str) -> dict:
 
 
 def parse_block(block_text: str) -> dict | None:
-    """Pull out title/url/meta/score/summary from a single job block."""
     m = JOB_BLOCK_RE.search(block_text)
     if not m:
         return None
@@ -117,7 +96,6 @@ def parse_block(block_text: str) -> dict | None:
 
 
 def extract_header(digest_text: str) -> tuple[str, str]:
-    """Return (h1_title, italic_summary_line) from the top of the digest."""
     lines = digest_text.splitlines()
     title = lines[0].lstrip("# ").strip() if lines else "Daily Job Digest"
     summary = ""
@@ -129,7 +107,7 @@ def extract_header(digest_text: str) -> tuple[str, str]:
     return title, summary
 
 
-# ---------- HTML rendering ----------
+# ---------- Rendering ----------
 TIER_RENDER = {
     "strong": ("🟢 Strong Matches", "#1a8f3c"),
     "worth_a_look": ("🟡 Worth a Look", "#b88800"),
@@ -137,8 +115,8 @@ TIER_RENDER = {
 }
 
 
-def render_html(profile_name: str, header_title: str, header_summary: str,
-                tier_blocks: dict, total: int, source_notice_html: str = "") -> str:
+def render_html(profile_name, header_title, header_summary, tier_blocks, total,
+                source_notice_html=""):
     css = (
         "body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;"
         "color:#222;line-height:1.45;max-width:760px;margin:24px auto;padding:0 16px;}"
@@ -148,14 +126,12 @@ def render_html(profile_name: str, header_title: str, header_summary: str,
         ".job{margin:18px 0;padding:12px 14px;border:1px solid #e3e3e3;border-radius:8px;background:#fafafa;}"
         ".job h3{margin:0 0 4px;font-size:16px;}"
         ".job h3 a{color:#0a58ca;text-decoration:none;}"
-        ".job h3 a:hover{text-decoration:underline;}"
         ".meta{color:#555;font-size:13px;margin-bottom:6px;}"
         ".score{color:#888;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}"
         ".summary{margin:8px 0 0;padding:8px 12px;border-left:3px solid #ccc;background:#fff;color:#333;font-size:13px;}"
         ".new-badge{background:#e7f5ec;color:#1a8f3c;padding:1px 6px;border-radius:4px;font-size:11px;margin-left:6px;vertical-align:middle;}"
         ".footer{margin-top:36px;padding-top:14px;border-top:1px solid #eee;color:#888;font-size:12px;}"
     )
-
     parts = [
         "<html><head><style>", css, "</style></head><body>",
         f"<h1>{header_title}</h1>",
@@ -164,7 +140,6 @@ def render_html(profile_name: str, header_title: str, header_summary: str,
         parts.append(f'<div class="sub">{header_summary}</div>')
     if source_notice_html:
         parts.append(source_notice_html)
-
     for tier_key, blocks in tier_blocks.items():
         if not blocks:
             continue
@@ -175,16 +150,8 @@ def render_html(profile_name: str, header_title: str, header_summary: str,
             if not j:
                 continue
             new_badge = '<span class="new-badge">new</span>' if "🆕" in j["new"] else ""
-            # j["meta"] looks like: **Company** · Loc · $X-$Y · _Source · posted X ago_
-            # Render the bold/italic conventions to HTML by simple substitution
-            meta_html = (
-                j["meta"]
-                .replace("**", "")
-                .replace("_", "")
-            )
-            summary_html = ""
-            if j["summary"]:
-                summary_html = f'<div class="summary">{j["summary"]}</div>'
+            meta_html = j["meta"].replace("**", "").replace("_", "")
+            summary_html = f'<div class="summary">{j["summary"]}</div>' if j["summary"] else ""
             parts.append(
                 f'<div class="job">'
                 f'<h3><a href="{j["url"]}">{j["title"]}</a>{new_badge}</h3>'
@@ -193,7 +160,6 @@ def render_html(profile_name: str, header_title: str, header_summary: str,
                 f'{summary_html}'
                 f'</div>'
             )
-
     parts.append(
         f'<div class="footer">{total} listings emailed for profile <code>{profile_name}</code>. '
         f'Full digest archive at <code>profiles/{profile_name}/digest_archive/</code>.</div>'
@@ -202,8 +168,7 @@ def render_html(profile_name: str, header_title: str, header_summary: str,
     return "".join(parts)
 
 
-def render_plaintext(header_title: str, header_summary: str,
-                     tier_blocks: dict, source_notice_text: str = "") -> str:
+def render_plaintext(header_title, header_summary, tier_blocks, source_notice_text=""):
     out = [header_title, ""]
     if header_summary:
         out += [header_summary, ""]
@@ -230,37 +195,34 @@ def render_plaintext(header_title: str, header_summary: str,
     return "\n".join(out)
 
 
-# ---------- Main ----------
+def emit_skip(reason):
+    print(json.dumps({"skip": True, "reason": reason}))
+    sys.exit(0)
+
+
 def main():
     if len(sys.argv) != 3:
         print(__doc__, file=sys.stderr)
         sys.exit(2)
     profile_dir = Path(sys.argv[1])
-    project_root = Path(sys.argv[2])
+    # project_root accepted for API compat with old script; not used.
 
     email_cfg_path = profile_dir / "email.json"
     if not email_cfg_path.exists():
-        print(f"No email.json at {email_cfg_path}; skipping email send.", file=sys.stderr)
-        return
+        emit_skip(f"no email.json at {email_cfg_path}")
     email_cfg = json.loads(email_cfg_path.read_text())
     if not email_cfg.get("enabled", True):
-        print(f"Email disabled for profile {profile_dir.name}; skipping.", file=sys.stderr)
-        return
-
+        emit_skip("email disabled")
     recipient = email_cfg.get("recipient_email", "").strip()
     if not recipient:
-        print(f"No recipient_email in {email_cfg_path}; skipping.", file=sys.stderr)
-        return
-
+        emit_skip("no recipient_email")
     tier_keys = email_cfg.get("tiers") or ["strong", "worth_a_look"]
     if not isinstance(tier_keys, list) or not tier_keys:
         tier_keys = ["strong"]
 
     digest_path = profile_dir / "digest.md"
     if not digest_path.exists():
-        print(f"No digest at {digest_path}; nothing to send.", file=sys.stderr)
-        return
-
+        emit_skip(f"no digest at {digest_path}")
     digest_text = digest_path.read_text()
     header_title, header_summary = extract_header(digest_text)
 
@@ -268,9 +230,7 @@ def main():
     selected = {k: all_tiers.get(k, []) for k in tier_keys}
     total = sum(len(b) for b in selected.values())
 
-    # Optional: read source-status notice. Orchestrator writes
-    # data/source_status_<TODAY>.json with {"<source>": "ok"|"<failure_reason>"}.
-    # Any non-"ok" entry is rendered as a banner in the email.
+    # Optional source-status banner.
     source_notice_html = ""
     source_notice_text = ""
     today_iso = datetime.now().strftime("%Y-%m-%d")
@@ -297,25 +257,15 @@ def main():
             print(f"Could not read {status_path}: {e}", file=sys.stderr)
 
     if total == 0 and not source_notice_html:
-        print(f"No matches in selected tiers ({tier_keys}); skipping send.", file=sys.stderr)
-        return
-
-    env = load_env(project_root / ".env")
-    smtp_host = env.get("SMTP_HOST", "smtp.gmail.com")
-    smtp_port = int(env.get("SMTP_PORT", "465"))
-    smtp_user = env.get("SMTP_USER", "").strip()
-    smtp_password = env.get("SMTP_PASSWORD", "").strip()
-    from_name = env.get("SMTP_FROM_NAME", "Job Pipeline").strip()
-    if not smtp_user or not smtp_password:
-        print("SMTP_USER or SMTP_PASSWORD missing in .env; cannot send.", file=sys.stderr)
-        sys.exit(1)
+        emit_skip(f"no matches in selected tiers ({tier_keys})")
 
     counts = " · ".join(
         f"{len(selected.get(k, []))} {TIER_RENDER[k][0].split()[1].lower()}"
         for k in tier_keys if selected.get(k)
     )
     today_str = datetime.now().strftime("%a %b %d")
-    subject = f"Job Digest — {today_str} ({counts})"
+    subject_marker = f"Job Digest — {today_str}"
+    subject = f"{subject_marker} ({counts})" if counts else subject_marker
 
     html_body = render_html(
         profile_dir.name, header_title, header_summary, selected, total,
@@ -326,19 +276,16 @@ def main():
         source_notice_text=source_notice_text,
     )
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = f"{from_name} <{smtp_user}>" if from_name else smtp_user
-    msg["To"] = recipient
-    msg.attach(MIMEText(plain_body, "plain", "utf-8"))
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
-
-    ctx = ssl.create_default_context()
-    with smtplib.SMTP_SSL(smtp_host, smtp_port, context=ctx, timeout=30) as server:
-        server.login(smtp_user, smtp_password)
-        server.send_message(msg)
-
-    print(f"Sent digest to {recipient} ({total} listings: {counts}).", file=sys.stderr)
+    print(json.dumps({
+        "skip": False,
+        "to": [recipient],
+        "subject": subject,
+        "subject_marker": subject_marker,
+        "htmlBody": html_body,
+        "body": plain_body,
+        "total": total,
+        "tier_counts": {k: len(v) for k, v in selected.items()},
+    }))
 
 
 if __name__ == "__main__":
