@@ -90,12 +90,18 @@ If Dice errors, skip silently for this profile.
 
 ## Step 3d — LinkedIn email alerts (this profile, gated by linkedin.json)
 Read `$PROFILE_DIR/linkedin.json` if it exists. If the file is missing, or
-`enabled` is `false`, skip Steps 3d and 3e for this profile.
+`enabled` is `false`, or `gmail_labels` is empty, skip Steps 3d and 3e for this profile.
 
-Otherwise: use `linkedin.json.gmail_label` as the label and
-`linkedin.json.gmail_mcp_id` if set, else fall back to `{GMAIL_MCP_ID}`. Call
-the chosen Gmail MCP's `search_threads` with:
-  - `query="label:<label> newer_than:1d"`
+Otherwise: use `linkedin.json.gmail_labels` (an array of one or more Gmail
+labels) and `linkedin.json.gmail_mcp_id` if set, else fall back to `{GMAIL_MCP_ID}`.
+Build a query that OR-combines every label, e.g. for `["linkedin-jobs-software", "linkedin-jobs-ai"]`:
+  `query="(label:linkedin-jobs-software OR label:linkedin-jobs-ai) newer_than:1d"`
+
+For a single-label list, the parentheses are still safe:
+  `query="(label:linkedin-jobs-software) newer_than:1d"`
+
+Call the chosen Gmail MCP's `search_threads` with:
+  - `query="<built query>"`
   - `pageSize=50`
 
 For every thread returned, call the Gmail MCP's `get_thread` with `messageFormat="FULL_CONTENT"` and extract `messages[].plaintextBody`.
