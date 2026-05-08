@@ -34,21 +34,17 @@ DEFAULT_CONFIG = {
     "salary_floor": 150_000,
     "tiers": {"strong_min": 17, "worth_a_look_min": 12},
     "title": {
-        "senior_tokens": ["senior", r"sr\.?", "staff", "principal", "lead", "ii", "iii"],
-        "senior_bonus": 5,
-        "junior_tokens": [r"junior", r"jr\.?", "associate", "entry", "intern", r"\bi\b"],
-        "junior_penalty": -5,
+        "senior_tokens": [],
+        "senior_bonus": 3,
         "primary_role_substrings": ["software engineer", "software developer", " sde", " swe"],
         "primary_role_bonus": 3,
         "secondary_role_substrings": ["engineer", "developer"],
         "secondary_role_bonus": 1,
-        "specialty_groups": [
-            {"name": "fullstack", "substrings": ["full stack", "fullstack", "full-stack"], "bonus": 2},
-            {"name": "frontend", "substrings": ["front end", "frontend", "front-end"], "bonus": 2},
-            {"name": "backend", "substrings": ["back end", "backend", "back-end"], "bonus": 2},
-        ],
-        "tech_keywords": ["react", "typescript", "java", "kotlin", "aws"],
-        "tech_max_bonus": 3,
+        # Merged former specialty_groups + tech_keywords. Each entry is matched
+        # with word-boundary regex; +1 per match, no cap. Multi-word phrases
+        # like "full stack" still match because the space inside is a word
+        # boundary on each side.
+        "keywords": [],
     },
     "salary": {
         "tiers": [
@@ -219,28 +215,31 @@ def score_title(title: str):
     cfg = CONFIG["title"]
     notes = []
     score = 0
-    if any(has_token(title, t) for t in cfg["senior_tokens"]):
-        score += cfg["senior_bonus"]
-        notes.append(f"senior+{cfg['senior_bonus']}")
-    if any(has_token(title, t) for t in cfg["junior_tokens"]):
-        score += cfg["junior_penalty"]
-        notes.append(f"junior{cfg['junior_penalty']}")
     t = title.lower()
+
+    # Senior-level signal (e.g. Senior, Staff, Head of, II, III). Optional —
+    # if a profile leaves senior_tokens empty, no senior bonus is applied.
+    senior_tokens = cfg.get("senior_tokens", [])
+    if senior_tokens and any(has_token(title, tok) for tok in senior_tokens):
+        bonus = cfg.get("senior_bonus", 3)
+        score += bonus
+        notes.append(f"senior+{bonus}")
+
+    # Role match — primary preferred, falls back to secondary.
     if any(s in t for s in cfg["primary_role_substrings"]):
         score += cfg["primary_role_bonus"]
         notes.append(f"role+{cfg['primary_role_bonus']}")
-    elif any(s in t for s in cfg["secondary_role_substrings"]):
-        score += cfg["secondary_role_bonus"]
-        notes.append(f"role+{cfg['secondary_role_bonus']}")
-    for spec in cfg["specialty_groups"]:
-        if any(s in t for s in spec["substrings"]):
-            score += spec["bonus"]
-            notes.append(f"{spec['name']}+{spec['bonus']}")
-    tech_hits = sum(1 for kw in cfg["tech_keywords"] if has_token(title, kw))
-    if tech_hits:
-        bonus = min(tech_hits, cfg["tech_max_bonus"])
-        score += bonus
-        notes.append(f"tech+{bonus}")
+    elif any(s in t for s in cfg.get("secondary_role_substrings", [])):
+        score += cfg.get("secondary_role_bonus", 0)
+        notes.append(f"role+{cfg.get('secondary_role_bonus', 0)}")
+
+    # Merged keywords (formerly tech_keywords + specialty_groups). Each entry
+    # is word-boundary matched; +1 per match; no cap.
+    keywords = cfg.get("keywords", [])
+    matched = [kw for kw in keywords if has_token(title, kw)]
+    if matched:
+        score += len(matched)
+        notes.append(f"kw+{len(matched)}")
     return score, notes
 
 
@@ -325,7 +324,10 @@ def render_job(j, new_hashes, today, include_summary=False):
     s = j["score"]
     notes = ", ".join(s["title_notes"]) if s["title_notes"] else ""
     source = j.get("source", "Indeed")
+    # Hidden hash marker — invisible in rendered Markdown but lets the
+    # apply_profile_fit re-rank pass key each block back to its job hash.
     out = (
+        f"<!--HASH:{j['hash']}-->\n"
         f"### [{j['title']}]({j['url']}){new_tag}\n"
         f"**{j['company']}** · {j['location']} · {fmt_comp(j)} · "
         f"_{source} · posted {fmt_age(j['posted_dt'], today)}_\n\n"

@@ -234,6 +234,45 @@ Write to `/tmp/<profile>_job_enrichments_linkedin_{TODAY}.json`.
     /tmp/<profile>_job_enrichments_{TODAY}.json
   ```
 
+## Step 3i.5 — Profile-fit re-rank for the Strong tier (this profile)
+At this point, every Strong-tier job in `$PROFILE_DIR/digest.md` has its full
+description spliced in as a `> blockquote` summary. Use that signal plus the
+profile narrative to re-rank within the Strong tier.
+
+Read `$PROFILE_DIR/profile.md`. For each job in the **Strong Matches tier
+only** (do NOT process Worth a Look or Lower Priority):
+  - Read the title, the meta line, and the description in the blockquote
+    summary directly below the score line.
+  - Assign a `fit_score` 0–5 based on how well the role aligns with the
+    profile narrative — sector, level, type of work, scope, stack:
+      5 = excellent fit — directly matches a key strength + sector alignment
+      4 = strong fit — most of the role overlaps with the profile
+      3 = decent fit — relevant but missing one or two important elements
+      2 = marginal — adjacent to profile but not a clean match
+      1 = weak — mostly mismatched
+      0 = skip / unable to assess
+  - Write a one-line `fit_notes` (under 80 chars) capturing why.
+
+Extract each Strong-tier block's hash from its `<!--HASH:abc-->` marker.
+Build a dict:
+  ```json
+  { "<hash>": {"fit_score": 4, "fit_notes": "climate ecosystem alignment, cross-sector ops"} }
+  ```
+
+Write to `/tmp/<profile>_fit_scores_{TODAY}.json`. Then re-rank:
+  ```bash
+  python3 {PROJECT_DIR}/pipeline/apply_profile_fit.py \
+    $PROFILE_DIR/digest.md \
+    /tmp/<profile>_fit_scores_{TODAY}.json
+  ```
+
+This adds the fit score to each scored job's total, re-tiers using the
+profile's existing thresholds, re-renders the digest preserving spliced
+summaries, and surfaces a `_Profile fit: N/5 — notes_` line under each
+re-scored job. The fit pass can demote a Strong match into Worth a Look if
+its narrative fit is poor; it can also keep ordering tighter at the top of
+Strong tier.
+
 ## Step 3j — Write source-status snapshot (this profile)
 Persist the source-status object (built throughout Steps 3b–3h) to:
   `$PROFILE_DIR/data/source_status_{TODAY}.json`

@@ -54,10 +54,11 @@ TIER_NAME_TO_KEY = {
 JOB_BLOCK_RE = re.compile(
     r"^### \[(?P<title>[^\]]+)\]\((?P<url>[^\)]+)\)(?P<new>[^\n]*)\n"
     r"(?P<meta>\*\*[^\n]+)\n\n"
-    r"(?P<score>`Score:[^\n]+`[^\n]*)\n"
-    r"(?P<rest>(?:\n> [^\n]+\n)?)",
+    r"(?P<score>`Score:[^\n]+`[^\n]*)",
     re.MULTILINE,
 )
+PROFILE_FIT_IN_BLOCK_RE = re.compile(r"_Profile fit:\s*([^\n]+?)_")
+SUMMARY_BLOCKQUOTE_RE = re.compile(r"^> (.+?)$", re.MULTILINE)
 
 
 def split_into_tiers(digest_text: str) -> dict:
@@ -81,10 +82,10 @@ def parse_block(block_text: str) -> dict | None:
     m = JOB_BLOCK_RE.search(block_text)
     if not m:
         return None
-    rest = m.group("rest").strip()
-    summary = ""
-    if rest.startswith(">"):
-        summary = rest[1:].strip()
+    fit_match = PROFILE_FIT_IN_BLOCK_RE.search(block_text)
+    profile_fit = fit_match.group(1).strip() if fit_match else ""
+    summary_match = SUMMARY_BLOCKQUOTE_RE.search(block_text)
+    summary = summary_match.group(1).strip() if summary_match else ""
     return {
         "title": m.group("title").strip(),
         "url": m.group("url").strip(),
@@ -92,6 +93,7 @@ def parse_block(block_text: str) -> dict | None:
         "meta": m.group("meta").strip(),
         "score": m.group("score").strip(),
         "summary": summary,
+        "profile_fit": profile_fit,
     }
 
 
@@ -129,6 +131,7 @@ def render_html(profile_name, header_title, header_summary, tier_blocks, total,
         ".meta{color:#555;font-size:13px;margin-bottom:6px;}"
         ".score{color:#888;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}"
         ".summary{margin:8px 0 0;padding:8px 12px;border-left:3px solid #ccc;background:#fff;color:#333;font-size:13px;}"
+        ".profile-fit{margin:6px 0 0;padding:4px 10px;background:#eef6ff;color:#0a4480;font-size:12px;font-style:italic;border-radius:4px;}"
         ".new-badge{background:#e7f5ec;color:#1a8f3c;padding:1px 6px;border-radius:4px;font-size:11px;margin-left:6px;vertical-align:middle;}"
         ".footer{margin-top:36px;padding-top:14px;border-top:1px solid #eee;color:#888;font-size:12px;}"
     )
@@ -151,12 +154,14 @@ def render_html(profile_name, header_title, header_summary, tier_blocks, total,
                 continue
             new_badge = '<span class="new-badge">new</span>' if "🆕" in j["new"] else ""
             meta_html = j["meta"].replace("**", "").replace("_", "")
+            fit_html = f'<div class="profile-fit">Profile fit: {j["profile_fit"]}</div>' if j.get("profile_fit") else ""
             summary_html = f'<div class="summary">{j["summary"]}</div>' if j["summary"] else ""
             parts.append(
                 f'<div class="job">'
                 f'<h3><a href="{j["url"]}">{j["title"]}</a>{new_badge}</h3>'
                 f'<div class="meta">{meta_html}</div>'
                 f'<div class="score">{j["score"]}</div>'
+                f'{fit_html}'
                 f'{summary_html}'
                 f'</div>'
             )
@@ -189,6 +194,8 @@ def render_plaintext(header_title, header_summary, tier_blocks, source_notice_te
                 f"  {j['url']}",
                 f"  {j['meta'].replace('**', '').replace('_', '')}",
             ]
+            if j.get("profile_fit"):
+                out += [f"  Profile fit: {j['profile_fit']}"]
             if j["summary"]:
                 out += [f"  {j['summary']}"]
             out += [""]
