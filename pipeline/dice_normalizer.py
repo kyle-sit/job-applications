@@ -85,10 +85,16 @@ def clean_summary(s: str, max_chars: int = 350) -> str:
 
 def normalize_record(item: dict) -> dict:
     """Map a Dice job item to the parser's expected fields."""
-    location = (item.get("jobLocation") or {}).get("displayName", "")
+    location = (item.get("jobLocation") or {}).get("displayName", "") or ""
+    location = location.strip()
     if item.get("isRemote"):
         if "remote" not in location.lower():
             location = f"{location} (Remote)" if location else "Remote"
+    if not location:
+        # Empty location would cause parse_and_score's FIELD_RE to greedily
+        # capture the next field as the Location value. Fall back to a
+        # placeholder string instead — same convention used for empty company.
+        location = "(unspecified)"
     title = item.get("title", "").strip()
     guid = item.get("guid") or item.get("id") or ""
     return {

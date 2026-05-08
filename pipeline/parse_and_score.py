@@ -140,7 +140,10 @@ def get_job_hash(job_id: str) -> str:
 
 
 JOB_BLOCK_RE = re.compile(r"\*\*Job Title:\*\*[\s\S]+?(?=\*\*Job Title:\*\*|\Z)")
-FIELD_RE = lambda name: re.compile(rf"\*\*{name}:\*\*\s*(.+?)(?=\n\s*\*\*|\Z)", re.DOTALL)
+# Match the value of a single-line field. `[ \t]*` after the label only consumes
+# space/tab (never newlines), so an empty field returns "" instead of greedily
+# slurping the next field's content via DOTALL.
+FIELD_RE = lambda name: re.compile(rf"\*\*{name}:\*\*[ \t]*([^\n]*)")
 
 
 def parse_jobs(text: str):

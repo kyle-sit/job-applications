@@ -37,6 +37,7 @@ Profile email.json schema (unchanged):
     }
 """
 
+import html
 import json
 import re
 import sys
@@ -153,14 +154,24 @@ def render_html(profile_name, header_title, header_summary, tier_blocks, total,
             if not j:
                 continue
             new_badge = '<span class="new-badge">new</span>' if "🆕" in j["new"] else ""
-            meta_html = j["meta"].replace("**", "").replace("_", "")
-            fit_html = f'<div class="profile-fit">Profile fit: {j["profile_fit"]}</div>' if j.get("profile_fit") else ""
-            summary_html = f'<div class="summary">{j["summary"]}</div>' if j["summary"] else ""
+            meta_text = j["meta"].replace("**", "").replace("_", "")
+            # HTML-escape every user-controlled string before splicing into the
+            # template. Without this, characters like `&` (e.g. "Bath & Body
+            # Works") render as malformed entities in stricter email clients
+            # and can silently break rendering of the rest of the email.
+            url_attr = html.escape(j["url"], quote=True)
+            title_html = html.escape(j["title"])
+            meta_safe = html.escape(meta_text)
+            score_html = html.escape(j["score"])
+            fit_safe = html.escape(j["profile_fit"]) if j.get("profile_fit") else ""
+            summary_safe = html.escape(j["summary"]) if j["summary"] else ""
+            fit_html = f'<div class="profile-fit">Profile fit: {fit_safe}</div>' if fit_safe else ""
+            summary_html = f'<div class="summary">{summary_safe}</div>' if summary_safe else ""
             parts.append(
                 f'<div class="job">'
-                f'<h3><a href="{j["url"]}">{j["title"]}</a>{new_badge}</h3>'
-                f'<div class="meta">{meta_html}</div>'
-                f'<div class="score">{j["score"]}</div>'
+                f'<h3><a href="{url_attr}">{title_html}</a>{new_badge}</h3>'
+                f'<div class="meta">{meta_safe}</div>'
+                f'<div class="score">{score_html}</div>'
                 f'{fit_html}'
                 f'{summary_html}'
                 f'</div>'
