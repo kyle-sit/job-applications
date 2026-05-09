@@ -2,10 +2,9 @@
 """
 Job Pipeline — Parse, dedupe, score, and rank job listings from multiple sources.
 
-Input files: concatenated markdown blocks in the format Indeed/Dice/LinkedIn
+Input files: concatenated markdown blocks in the format Indeed/LinkedIn
 parsers produce. Source is auto-detected from each `job_id` prefix:
   hn-       → Hacker News
-  dice-     → Dice
   linkedin- → LinkedIn
   (no prefix) → Indeed
 
@@ -70,7 +69,6 @@ DEFAULT_CONFIG = {
         # cutoff (e.g. LinkedIn, where posted_on is always the run date).
         "max_days_by_source": {
             "Indeed": 7,
-            "Dice": 3,
         },
         # If a job has no parseable posted_on date, drop it (True) or keep it (False).
         "drop_if_no_date": False,
@@ -354,7 +352,6 @@ def render_job(j, new_hashes, today, include_summary=False):
 
 SOURCE_BY_PREFIX = [
     ("hn-", "HN"),
-    ("dice-", "Dice"),
     ("linkedin-", "LinkedIn"),
 ]
 
@@ -429,7 +426,7 @@ def main():
         src_counts[j.get("source", "Indeed")] = src_counts.get(j.get("source", "Indeed"), 0) + 1
     src_summary = ", ".join(f"{n} {s}" for s, n in sorted(src_counts.items()))
 
-    # Pretty-print the per-source recency cutoff for the header (e.g. "Indeed≤7d, Dice≤3d").
+    # Pretty-print the per-source recency cutoff for the header (e.g. "Indeed≤7d").
     rec_caps = (CONFIG.get("recency", {}) or {}).get("max_days_by_source") or {}
     rec_summary = ", ".join(f"{src}≤{d}d" for src, d in sorted(rec_caps.items())) if rec_caps else "none"
 

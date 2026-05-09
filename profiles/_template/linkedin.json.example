@@ -2,7 +2,7 @@
   "_about": "Per-profile LinkedIn integration settings. The pipeline reads this to decide whether to fetch LinkedIn job-alert emails for this profile and which Gmail labels to filter on.",
 
   "enabled": false,
-  "_enabled_help": "Set to true to enable LinkedIn coverage for this profile. Requires Gmail MCP connector + LinkedIn alerts set up to land in your inbox under one of the gmail_labels below. If false, the pipeline skips LinkedIn for this profile entirely (Indeed and Dice still run).",
+  "_enabled_help": "Set to true to enable LinkedIn coverage for this profile. Requires Gmail MCP connector + LinkedIn alerts set up to land in your inbox under one of the gmail_labels below. If false, the pipeline skips LinkedIn for this profile entirely (Indeed still runs).",
 
   "gmail_labels": ["linkedin-jobs-PROFILE_NAME"],
   "_gmail_labels_help": "Gmail labels that LinkedIn alert emails for THIS profile are tagged with. Multiple labels are OR'd together — useful when a profile spans multiple search themes (e.g. ['linkedin-jobs-software', 'linkedin-jobs-ai']). Use a per-profile label naming scheme (e.g. 'linkedin-jobs-alice-*') so profiles don't see each other's alerts. Set up each label via a Gmail filter on `from:jobalerts-noreply@linkedin.com` AND any per-profile/per-theme distinguisher (subject contains the role keyword, forwarded-from address, etc.).",

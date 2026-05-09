@@ -9,16 +9,10 @@ project root.
 | Source   | Fetched by               | Output format            | Salary in raw?    |
 |----------|--------------------------|--------------------------|-------------------|
 | Indeed   | Indeed MCP `search_jobs` | Markdown (native format) | Yes               |
-| Dice     | Dice MCP `search_jobs`   | JSON → markdown via `dice_normalizer.py` | Yes |
 | LinkedIn | Gmail MCP + `linkedin_parser.py` | Markdown                | No (added pre-score) |
 | HN       | `hn_fetcher.py` (dormant — see below) | Markdown      | Sometimes (parsed from comments) |
 
 ## Pipeline scripts
-
-### `dice_normalizer.py`
-Takes a JSON file containing one or more Dice `search_jobs` responses and
-produces a markdown file in the unified format. Preserves Dice's `summary`
-field so strong matches render with descriptions automatically.
 
 ### `linkedin_parser.py`
 Reads concatenated plaintext bodies from LinkedIn job-alert emails, splits
@@ -44,9 +38,9 @@ Also writes two sidecar JSONs:
 - `needs_enrichment_linkedin.json` — LinkedIn jobs missing a summary (Chrome failed)
 
 ### `splice_enrichments.py`
-Replaces `<!--ENRICH_INDEED:hash-->`, `<!--ENRICH_LINKEDIN:hash-->`, and
-`<!--ENRICH_DICE:hash-->` markers in a digest with blockquote summaries from
-a `{hash: text}` JSON. Markers without a matching entry are removed silently.
+Replaces `<!--ENRICH_INDEED:hash-->` and `<!--ENRICH_LINKEDIN:hash-->` markers
+in a digest with blockquote summaries from a `{hash: text}` JSON. Markers
+without a matching entry are removed silently.
 
 ### `hn_fetcher.py` (dormant)
 Fetches the latest "Ask HN: Who is hiring?" thread and parses comments. Built
@@ -58,7 +52,7 @@ allowlist (some plans don't apply user allowlist to runtime).
 ## Execution order
 
 ```
-1. Fetch  ────► Indeed/Dice/LinkedIn raw data
+1. Fetch  ────► Indeed/LinkedIn raw data
 2. Parse  ────► Each source → unified markdown blocks
 3. Enrich (PRE-SCORE) ──► LinkedIn pages via Chrome → salary + summary written into LinkedIn markdown
 4. Score  ────► parse_and_score.py reads all markdown, ranks, writes digest with markers
@@ -72,7 +66,7 @@ allowlist (some plans don't apply user allowlist to runtime).
 LinkedIn alert emails don't include salary. If you score them with no comp
 data, every LinkedIn match gets 0 on the salary axis — which is half the
 points away from "Strong Match" tier. By Chrome-fetching salary BEFORE
-scoring, LinkedIn jobs compete fairly with Indeed/Dice.
+scoring, LinkedIn jobs compete fairly with Indeed.
 
 ## Why post-score Indeed enrichment is fine
 

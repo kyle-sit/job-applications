@@ -1,7 +1,7 @@
 # Job Pipeline
 
 A daily, multi-source job-search pipeline that runs in Cowork. Pulls fresh
-listings from Indeed, Dice, and LinkedIn email alerts, enriches them with full
+listings from Indeed and LinkedIn email alerts, enriches them with full
 descriptions and salary data, scores them against each profile's background,
 and writes a ranked digest per profile that you read each morning.
 
@@ -13,7 +13,7 @@ and (optionally) LinkedIn alerts.
 
 Every day at 8 AM (configurable), for each profile under `profiles/`:
 
-1. **Searches Indeed and Dice** in parallel for every (role × location) combination
+1. **Searches Indeed** in parallel for every (role × location) combination
    that profile cares about.
 2. **Reads that profile's LinkedIn job-alert emails** from Gmail using a
    per-profile label (e.g. `linkedin-jobs-alice`) — no scraping, just the
@@ -21,8 +21,8 @@ Every day at 8 AM (configurable), for each profile under `profiles/`:
 3. **Opens each LinkedIn job in Chrome** to extract salary, applicant count, and
    the actual job description (using your own logged-in browser session).
 4. **Dedupes, filters, and scores** every listing using rules in that profile's
-   `scoring.json`. Hard recency cutoff (Indeed≤7d, Dice≤3d by default) drops
-   stale listings before scoring.
+   `scoring.json`. Hard recency cutoff (Indeed≤7d by default) drops stale
+   listings before scoring.
 5. **Writes a ranked digest** per profile as Markdown — Strong Matches, Worth
    a Look, Lower Priority — with a one-paragraph summary inline for top matches.
 6. **Tracks new listings** across runs (per profile) so each digest highlights
@@ -32,7 +32,6 @@ Every day at 8 AM (configurable), for each profile under `profiles/`:
 
 - **Cowork** (Claude desktop app)
 - **Indeed MCP connector** — required
-- **Dice MCP connector** — required for tech roles, optional otherwise
 - **Gmail MCP connector** — required if you want LinkedIn coverage
 - **Claude in Chrome browser extension** — optional but strongly recommended (gets
   rich LinkedIn data)
@@ -66,7 +65,6 @@ job-pipeline/
 │       └── digest_archive/            ← daily digests archived
 └── pipeline/
     ├── parse_and_score.py             ← scores and ranks
-    ├── dice_normalizer.py             ← Dice JSON → markdown
     ├── linkedin_parser.py             ← LinkedIn email → markdown
     ├── enrich_linkedin_md.py          ← apply Chrome enrichments to LinkedIn markdown
     ├── splice_enrichments.py          ← splice descriptions into digest

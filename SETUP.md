@@ -75,23 +75,19 @@ engineering — for other fields, pay attention to:
 - **`title.tech_keywords`**: skills/tools you bring (Hubspot, Figma, etc.)
 - **`title.specialty_groups`**: sub-specialties within your field
 - **`location.preferred`**: replace `REPLACE-WITH-CITY-1/2` with your target cities
-- **`recency.max_days_by_source`**: hard cutoffs (default Indeed≤7d, Dice≤3d)
+- **`recency.max_days_by_source`**: hard cutoffs (default Indeed≤7d)
 
 Each section has a `_about` comment explaining what it does.
 
 ---
 
-## Step 5 — Connect Indeed and Dice MCP connectors
+## Step 5 — Connect the Indeed MCP connector
 
 In Cowork: open Settings → Connectors. Search for and Connect:
 - **Indeed** (required)
-- **Dice** (required for tech roles; less useful for other fields — skip if not relevant)
 
-If a connector doesn't apply to your field (e.g. Dice for non-tech), edit
-`scheduled-task-prompt-template.md` later to remove that step.
-
-The same Indeed and Dice MCPs are shared by every profile — no per-profile
-connector setup is needed for these.
+The same Indeed MCP is shared by every profile — no per-profile connector
+setup is needed for it.
 
 ---
 
@@ -138,7 +134,7 @@ a different Google account), set `gmail_mcp_id` per profile to the right UUID.
 ## Step 7 — Install Claude in Chrome (recommended for LinkedIn)
 
 Without Chrome, LinkedIn jobs appear in your digest but with no salary or
-description. With Chrome, they're enriched alongside Indeed/Dice.
+description. With Chrome, they're enriched alongside Indeed listings.
 
 1. Install the **Claude in Chrome** extension from the Chrome Web Store
    (search "Claude" or visit https://www.anthropic.com/claude-in-chrome)
@@ -217,10 +213,9 @@ The pipeline picks up config changes on the next run — no restart needed.
 - **LinkedIn descriptions empty** — Chrome wasn't running at run time, or the
   extension isn't signed in. Check Chrome status and re-run.
 
-- **Indeed/Dice rate-limited** — the template already inserts `sleep 30`
-  between profiles for Dice. If you have many profiles, also add `sleep 30`
-  between Dice batches within a profile (already in the template), or reduce
-  role/location counts.
+- **Indeed rate-limited** — Indeed historically tolerates parallel bursts.
+  If you start seeing rate-limit errors, fall back to a serial-with-`sleep 1`
+  pattern in Step 3b of the template, or reduce role/location counts.
 
 - **Scoring feels off** — check `profiles/<name>/scoring.json`. Each scoring
   axis has its own section. Tweak one knob at a time and re-run to see the effect.

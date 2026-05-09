@@ -64,10 +64,9 @@
     "stale_after_days": 365,
     "stale_penalty": -2,
     "max_days_by_source": {
-      "Indeed": 7,
-      "Dice": 3
+      "Indeed": 7
     },
-    "_max_days_by_source_help": "Hard recency cutoff per source. Sources NOT listed here have no cutoff (LinkedIn, for instance, where posted_on is always the run date). Pair the Dice cutoff with posted_date in scheduled-task-prompt-template.md for source-side filtering.",
+    "_max_days_by_source_help": "Hard recency cutoff per source. Sources NOT listed here have no cutoff (LinkedIn, for instance, where posted_on is always the run date).",
     "drop_if_no_date": false,
     "_drop_if_no_date_help": "If a job lacks a parseable posted_on date, drop it (true) or keep it (false). Default false."
   },

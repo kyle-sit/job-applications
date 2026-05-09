@@ -1,14 +1,13 @@
 # Scheduled Task Prompt — Template (multi-profile)
 
 This is the prompt body for the daily Cowork scheduled task. It runs once a day
-via cron, fetches all sources for every profile, scores, enriches, and writes
-a digest per profile.
+via cron, fetches all configured sources for every profile, scores, enriches,
+and writes a digest per profile.
 
 When setting up, fill in three placeholders:
 - `{PROJECT_DIR}` — absolute path to your project folder
   (e.g. `/Users/jane/Documents/Claude/Projects/JobApps/job-pipeline`)
 - `{INDEED_MCP_ID}` — the Indeed connector's MCP UUID for your Cowork install
-- `{DICE_MCP_ID}` — the Dice connector's MCP UUID
 - `{GMAIL_MCP_ID}` — the default Gmail connector's MCP UUID (per-profile
   overrides are supported via `linkedin.json.gmail_mcp_id`)
 
@@ -38,27 +37,26 @@ starting with `_` or `.` is skipped (so `_template` is never run).
 
 If the list is empty, exit with: `"No active profiles in {PROJECT_DIR}/profiles."`
 
-# Step 3 — For EACH profile, run Steps 3a–3l sequentially
+# Step 3 — For EACH profile, run Steps 3a–3k sequentially
 
-Process profiles one at a time. Between profiles, sleep 30 seconds before the
-next profile's Dice calls to stay well under Dice's 200-req/min limit.
+Process profiles one at a time.
 
 Define `PROFILE_DIR={PROJECT_DIR}/profiles/<profile>` and create needed
 subdirs once per profile:
 ```bash
-mkdir -p $PROFILE_DIR/data/raw_searches $PROFILE_DIR/data/dice_raw \
+mkdir -p $PROFILE_DIR/data/raw_searches \
          $PROFILE_DIR/data/linkedin_raw $PROFILE_DIR/digest_archive
 ```
 
 **Source-status tracking.** Throughout this profile's run, maintain a JSON
 object in memory that records each source's status, e.g. `{"indeed": "ok",
-"dice": "rate_limited", "linkedin": "ok"}`. If a source errors out
-(rate-limited, no connector, no creds, parser failure, etc.), set its status
-to a short reason string like `"rate_limited"`, `"chrome_unavailable"`, or
-`"gmail_error"` and STOP making further calls for that source for this
-profile — but continue with the other sources. At the end of the profile run
-(Step 3j below), write this object to `$PROFILE_DIR/data/source_status_{TODAY}.json`
-so the email digest can render a banner about which sources were missing.
+"linkedin": "ok"}`. If a source errors out (rate-limited, no connector, no
+creds, parser failure, etc.), set its status to a short reason string like
+`"rate_limited"`, `"chrome_unavailable"`, or `"gmail_error"` and STOP making
+further calls for that source for this profile — but continue with the other
+sources. At the end of the profile run (Step 3i below), write this object to
+`$PROFILE_DIR/data/source_status_{TODAY}.json` so the email digest can render
+a banner about which sources were missing.
 
 ## Step 3a — Read this profile's search config
 Read `$PROFILE_DIR/search_queries.json` for `role_queries` and `locations`. If
@@ -73,8 +71,7 @@ For every (role × location) pair, call `mcp__{INDEED_MCP_ID}__search_jobs` in p
   - `job_type`: from config (default "fulltime")
 
 Indeed has historically tolerated parallel bursts; if you see rate-limit
-errors here, fall back to the same serial-with-`sleep 1` pattern documented
-for Dice in Step 3c.
+errors here, fall back to a serial-with-`sleep 1` pattern.
 
 Concatenate every search response's "result" field (with blank lines between) and Write to:
   `$PROFILE_DIR/data/raw_searches/{TODAY}.txt`
@@ -82,45 +79,9 @@ Concatenate every search response's "result" field (with blank lines between) an
 If every Indeed call errored out, skip writing the file and set
 source-status `"indeed": "<short reason>"`. Otherwise set `"indeed": "ok"`.
 
-## Step 3c — Dice searches (this profile)
-Same role × location matrix. For each call to `mcp__{DICE_MCP_ID}__search_jobs`:
-- For specific cities: pass `keyword`, `location`, `employment_types=["FULLTIME"]`, `posted_date="THREE"`, `jobs_per_page=15`
-- For "remote" locations: pass `keyword`, `employment_types=["FULLTIME"]`, `workplace_types=["Remote"]`, `posted_date="THREE"`, `jobs_per_page=15` (omit location)
-
-**Send Dice calls SERIALLY** (one at a time, never in parallel). Between
-calls, run `sleep 1` via bash. Dice's 200 req/min limit is shared across all
-clients of the MCP server (`client: global` in error responses), so even
-modest bursts can trip it. Serial-with-delay is the safe pattern.
-
-**On rate-limit error: stop calling Dice for this profile.** If any Dice call
-returns `Rate limit exceeded` (or any other error), do NOT retry and do NOT
-make further Dice calls in this profile's matrix. Instead:
-1. Set source-status `"dice": "rate_limited"` (or another short reason).
-2. Aggregate the Dice responses you successfully collected so far.
-3. Continue with Step 3d.
-
-`posted_date="THREE"` bounds Dice to listings posted in the last 3 days.
-`parse_and_score.py` also enforces a recency backstop (see `recency.max_days_by_source`
-in scoring.json) — keep both in sync if you change the window.
-
-Combine the successful Dice responses into one JSON: `{"data": [...all items...]}`.
-If at least one call succeeded, write to:
-  `$PROFILE_DIR/data/dice_raw/{TODAY}.json`
-
-Then normalize:
-  ```bash
-  python3 {PROJECT_DIR}/pipeline/dice_normalizer.py \
-    $PROFILE_DIR/data/dice_raw/{TODAY}.json \
-    $PROFILE_DIR/data/dice_raw/{TODAY}.txt
-  ```
-
-If zero Dice calls succeeded, skip writing the file and set source-status
-`"dice": "rate_limited"` (or whatever error you saw). The downstream parser
-in Step 3f handles missing source files gracefully.
-
-## Step 3d — LinkedIn email alerts (this profile, gated by linkedin.json)
+## Step 3c — LinkedIn email alerts (this profile, gated by linkedin.json)
 Read `$PROFILE_DIR/linkedin.json` if it exists. If the file is missing, or
-`enabled` is `false`, or `gmail_labels` is empty, skip Steps 3d and 3e for this profile.
+`enabled` is `false`, or `gmail_labels` is empty, skip Steps 3c and 3d for this profile.
 
 Otherwise: use `linkedin.json.gmail_labels` (an array of one or more Gmail
 labels) and `linkedin.json.gmail_mcp_id` if set, else fall back to `{GMAIL_MCP_ID}`.
@@ -149,11 +110,11 @@ Then run the parser:
 
 This also emits a sidecar JSON list at `{TODAY}_normalized.jobs.json`.
 
-If no threads found or Gmail errors, skip Step 3e and continue.
+If no threads found or Gmail errors, skip Step 3d and continue.
 
-## Step 3e — LinkedIn Chrome enrichment (PRE-SCORE, this profile)
+## Step 3d — LinkedIn Chrome enrichment (PRE-SCORE, this profile)
 Critical step: pulls salary + description from each LinkedIn page so the scorer
-in Step 3f can rank fairly.
+in Step 3e can rank fairly.
 
 a. Call `mcp__Claude_in_Chrome__list_connected_browsers`. Pick first with `isLocal=true`.
    If none connected, skip this step (write `{}` to enrichments file) — pipeline still works, just less precise.
@@ -191,7 +152,7 @@ Apply the enrichments to the LinkedIn markdown:
     /tmp/<profile>_linkedin_chrome_enrichments_{TODAY}.json
   ```
 
-## Step 3f — Run the parser/scorer with all available sources (this profile)
+## Step 3e — Run the parser/scorer with all available sources (this profile)
 Build the input file list dynamically — only pass paths that exist:
 
   ```bash
@@ -199,7 +160,6 @@ Build the input file list dynamically — only pass paths that exist:
     $PROFILE_DIR/digest.md \
     $PROFILE_DIR/data/seen_jobs.json \
     $PROFILE_DIR/data/raw_searches/{TODAY}.txt \
-    $PROFILE_DIR/data/dice_raw/{TODAY}.txt \
     $PROFILE_DIR/data/linkedin_raw/{TODAY}_normalized.txt
   ```
 
@@ -207,9 +167,9 @@ The parser auto-loads scoring rules from `$PROFILE_DIR/scoring.json` and detects
 
 This step writes:
   - `$PROFILE_DIR/needs_enrichment.json` — Indeed strong matches needing get_job_details
-  - `$PROFILE_DIR/needs_enrichment_linkedin.json` — LinkedIn jobs that didn't get a summary in Step 3e
+  - `$PROFILE_DIR/needs_enrichment_linkedin.json` — LinkedIn jobs that didn't get a summary in Step 3d
 
-## Step 3g — Enrich Indeed strong matches with full descriptions (this profile)
+## Step 3f — Enrich Indeed strong matches with full descriptions (this profile)
 Read `$PROFILE_DIR/needs_enrichment.json`. For each entry (cap at 15):
   - Call `mcp__{INDEED_MCP_ID}__get_job_details` with the entry's `job_id`.
   - Write a 2-3 sentence factual summary capturing what the team does, key skills/seniority, distinctive scope. Avoid company boilerplate. Under 350 chars.
@@ -217,12 +177,12 @@ Read `$PROFILE_DIR/needs_enrichment.json`. For each entry (cap at 15):
 
 Write to `/tmp/<profile>_job_enrichments_indeed_{TODAY}.json`.
 
-## Step 3h — LinkedIn fallback enrichment (this profile)
+## Step 3g — LinkedIn fallback enrichment (this profile)
 Read `$PROFILE_DIR/needs_enrichment_linkedin.json`. If empty or missing, skip.
-Otherwise re-run the same Chrome flow as Step 3e for these stragglers, building summaries.
+Otherwise re-run the same Chrome flow as Step 3d for these stragglers, building summaries.
 Write to `/tmp/<profile>_job_enrichments_linkedin_{TODAY}.json`.
 
-## Step 3i — Splice all post-score enrichments (this profile)
+## Step 3h — Splice all post-score enrichments (this profile)
   ```bash
   python3 -c "import json,os; \
     a=json.load(open('/tmp/<profile>_job_enrichments_indeed_{TODAY}.json')) if os.path.exists('/tmp/<profile>_job_enrichments_indeed_{TODAY}.json') else {}; \
@@ -234,7 +194,7 @@ Write to `/tmp/<profile>_job_enrichments_linkedin_{TODAY}.json`.
     /tmp/<profile>_job_enrichments_{TODAY}.json
   ```
 
-## Step 3i.5 — Profile-fit re-rank for the Strong tier (this profile)
+## Step 3h.5 — Profile-fit re-rank for the Strong tier (this profile)
 At this point, every Strong-tier job in `$PROFILE_DIR/digest.md` has its full
 description spliced in as a `> blockquote` summary. Use that signal plus the
 profile narrative to re-rank within the Strong tier.
@@ -273,30 +233,30 @@ re-scored job. The fit pass can demote a Strong match into Worth a Look if
 its narrative fit is poor; it can also keep ordering tighter at the top of
 Strong tier.
 
-## Step 3j — Write source-status snapshot (this profile)
-Persist the source-status object (built throughout Steps 3b–3h) to:
+## Step 3i — Write source-status snapshot (this profile)
+Persist the source-status object (built throughout Steps 3b–3g) to:
   `$PROFILE_DIR/data/source_status_{TODAY}.json`
 
-Each key is a source name (`indeed`, `dice`, `linkedin`, etc.) and each value
-is the string `"ok"` or a short reason if that source wasn't fully successful
-(e.g. `"rate_limited"`, `"chrome_unavailable"`, `"gmail_error"`,
-`"label_not_set"`). The email-send script reads this file and prepends a
-banner if any value is non-`"ok"`.
+Each key is a source name (`indeed`, `linkedin`, etc.) and each value is the
+string `"ok"` or a short reason if that source wasn't fully successful (e.g.
+`"rate_limited"`, `"chrome_unavailable"`, `"gmail_error"`, `"label_not_set"`).
+The email-send script reads this file and prepends a banner if any value is
+non-`"ok"`.
 
 Example:
   ```bash
   cat > $PROFILE_DIR/data/source_status_{TODAY}.json << 'EOF'
-  {"indeed": "ok", "dice": "rate_limited", "linkedin": "ok"}
+  {"indeed": "ok", "linkedin": "ok"}
   EOF
   ```
 
-## Step 3k — Archive (this profile)
+## Step 3j — Archive (this profile)
   ```bash
   cp $PROFILE_DIR/digest.md \
      $PROFILE_DIR/digest_archive/{TODAY}.md
   ```
 
-## Step 3l — Send digest email (this profile, gated by email.json)
+## Step 3k — Send digest email (this profile, gated by email.json)
   ```bash
   python3 {PROJECT_DIR}/pipeline/send_digest_email.py \
     $PROFILE_DIR \
@@ -307,13 +267,6 @@ The script reads `$PROFILE_DIR/email.json` and `{PROJECT_DIR}/.env`. It silently
 skips (exit 0) if email is disabled, the recipient is missing, or no matches
 fall in the configured tiers. SMTP errors exit non-zero — log them and continue
 to the next profile (don't abort the whole run).
-
-## Between profiles
-After completing 3a–3l for one profile, sleep 30 seconds before starting the
-next profile's Step 3c (Dice rate-limit safety):
-  ```bash
-  sleep 30
-  ```
 
 # Step 4 — Summary
 After all profiles are done, reply with one line per profile plus a header:

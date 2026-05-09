@@ -18,7 +18,7 @@ Please set up the daily scheduled task for me:
 
 1. Read the template at <path>/scheduled-task-prompt-template.md
 2. Discover my connector UUIDs by listing my installed MCP connectors and finding
-   Indeed, Dice, and Gmail. The UUIDs look like a-b-c-d-e formatted strings.
+   Indeed and Gmail. The UUIDs look like a-b-c-d-e formatted strings.
 3. List the profile dirs under <path>/profiles/ (skip _template and any name
    starting with `_` or `.`). For each profile:
    a. Read profile.md, search_queries.json, scoring.json, and linkedin.json
@@ -26,7 +26,7 @@ Please set up the daily scheduled task for me:
    b. Confirm placeholders are gone. If search_queries.json still has
       REPLACE-WITH text or profile.md still has {{placeholder}} text, stop and
       tell me which profile + which file needs editing before continuing.
-4. Replace {PROJECT_DIR}, {INDEED_MCP_ID}, {DICE_MCP_ID}, {GMAIL_MCP_ID} in
+4. Replace {PROJECT_DIR}, {INDEED_MCP_ID}, {GMAIL_MCP_ID} in
    the template with the discovered values.
 5. Create a scheduled task named "daily-job-search" with the resolved prompt,
    running at 8:00 AM local time daily.
@@ -38,9 +38,9 @@ Please set up the daily scheduled task for me:
 
 ## What Claude will check before installing
 
-- **Have you connected the required MCPs?** Indeed and Dice are required.
-  Gmail is required if any profile wants LinkedIn coverage. Without Gmail,
-  LinkedIn steps are skipped silently for every profile.
+- **Have you connected the required MCPs?** Indeed is required. Gmail is
+  required if any profile wants LinkedIn coverage. Without Gmail, LinkedIn
+  steps are skipped silently for every profile.
 
 - **Have you personalized each profile's config?** Claude will look for
   placeholder text like `REPLACE-WITH-YOUR-ROLE-1` in `search_queries.json`
