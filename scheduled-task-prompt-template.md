@@ -4,6 +4,31 @@ This is the prompt body for the daily Cowork scheduled task. It runs once a day
 via cron, fetches all configured sources for every profile, scores, enriches,
 and writes a digest per profile.
 
+## How this file is used
+
+**This file is the canonical source of truth.** It is rendered into the live
+Cowork skill at:
+  `~/Documents/Claude/Scheduled/daily-job-search/SKILL.md`
+
+The rendering happens once at install time (driven by `INSTALL_PROMPT.md`,
+which substitutes the placeholders below and adds the required YAML
+frontmatter). After install, the live SKILL.md is what Cowork actually
+executes each morning.
+
+**Editing workflow when you need to change the daily prompt:**
+1. Edit this file (the template) — the change is captured in git.
+2. Open a fresh chat in Cowork (NOT inside a scheduled-task run) and ask
+   Claude to mirror the change into `~/Documents/Claude/Scheduled/daily-job-search/SKILL.md`,
+   preserving the YAML frontmatter at the top of the live file.
+3. The next scheduled run picks up the change. No re-install required.
+
+There used to be a third file (`_new_scheduled_task_prompt.md`) that
+mirrored the rendered runtime version in this repo for git history. It was
+removed because it tended to drift out of sync with this template, which is
+how the Step 3k Chrome-auto-send patch silently went missing.
+
+## Placeholders to substitute at install time
+
 When setting up, fill in three placeholders:
 - `{PROJECT_DIR}` — absolute path to your project folder
   (e.g. `/Users/jane/Documents/Claude/Projects/JobApps/job-pipeline`)
@@ -79,78 +104,93 @@ Concatenate every search response's "result" field (with blank lines between) an
 If every Indeed call errored out, skip writing the file and set
 source-status `"indeed": "<short reason>"`. Otherwise set `"indeed": "ok"`.
 
-## Step 3c — LinkedIn email alerts (this profile, gated by linkedin.json)
+## Step 3c — LinkedIn email alerts via sub-agent (this profile, gated by linkedin.json)
 Read `$PROFILE_DIR/linkedin.json` if it exists. If the file is missing, or
-`enabled` is `false`, or `gmail_labels` is empty, skip Steps 3c and 3d for this profile.
+`enabled` is `false`, or `gmail_labels` is empty, skip Steps 3c and 3d for
+this profile and set source-status `"linkedin": "disabled"`.
 
-Otherwise: use `linkedin.json.gmail_labels` (an array of one or more Gmail
-labels) and `linkedin.json.gmail_mcp_id` if set, else fall back to `{GMAIL_MCP_ID}`.
-Build a query that OR-combines every label, e.g. for `["linkedin-jobs-software", "linkedin-jobs-ai"]`:
-  `query="(label:linkedin-jobs-software OR label:linkedin-jobs-ai) newer_than:1d"`
+**Do NOT call the Gmail MCP from the main assistant context.** Spawn a
+sub-agent that handles all Gmail traffic in its own context window — thread
+bodies never enter the parent's 200K budget. This is the single biggest
+context-window saving in the LinkedIn flow.
 
-For a single-label list, the parentheses are still safe:
-  `query="(label:linkedin-jobs-software) newer_than:1d"`
+Build the Gmail query from `gmail_labels`:
+- One label `X`: `(label:X) newer_than:1d`
+- Multiple labels: `(label:X OR label:Y OR ...) newer_than:1d`
 
-Call the chosen Gmail MCP's `search_threads` with:
-  - `query="<built query>"`
-  - `pageSize=50`
+Pick the Gmail MCP UUID: `linkedin.json.gmail_mcp_id` if set, else `{GMAIL_MCP_ID}`.
 
-For every thread returned, call the Gmail MCP's `get_thread` with `messageFormat="FULL_CONTENT"` and extract `messages[].plaintextBody`.
+Read the sub-agent prompt template via the `Read` tool:
+  `{PROJECT_DIR}/pipeline/agent_prompts/linkedin_fetch_subagent.md`
 
-Concatenate all plaintextBody values, separated by blank lines. Write to:
-  `$PROFILE_DIR/data/linkedin_raw/{TODAY}.txt`
+In the body of that file (everything after the `---` separator that ends
+the placeholder list), substitute:
+- `{{PROFILE}}` → the profile name
+- `{{PROFILE_DIR}}` → `$PROFILE_DIR`
+- `{{PROJECT_DIR}}` → `{PROJECT_DIR}`
+- `{{TODAY}}` → the TODAY date string
+- `{{GMAIL_MCP_ID}}` → the chosen Gmail MCP UUID for this profile
+- `{{GMAIL_QUERY}}` → the built query
 
-Then run the parser:
-  ```bash
-  python3 {PROJECT_DIR}/pipeline/linkedin_parser.py \
-    $PROFILE_DIR/data/linkedin_raw/{TODAY}.txt \
-    $PROFILE_DIR/data/linkedin_raw/{TODAY}_normalized.txt \
-    {TODAY}
-  ```
+Call the `Agent` tool with:
+- `subagent_type`: `"general-purpose"`
+- `description`: `"LinkedIn Gmail fetch (<profile>)"`
+- `prompt`: the substituted body
 
-This also emits a sidecar JSON list at `{TODAY}_normalized.jobs.json`.
+The sub-agent returns one line. Parse it with best-effort regex: extract the
+first `status=(\S+)` and the first `unique_jobs=(\d+)`. Valid statuses:
+- `status=ok` — proceed to Step 3d.
+- `status=no_threads` — nothing today; set `"linkedin": "no_threads"` and
+  skip Step 3d.
+- `status=gmail_error` — set `"linkedin": "gmail_error"` and skip Step 3d.
+- `status=parser_error` — set `"linkedin": "parser_error"` and skip Step 3d.
+- Anything else / unparseable — treat as `protocol_error`, set
+  `"linkedin": "protocol_error"`, skip Step 3d, continue to the next source.
 
-If no threads found or Gmail errors, skip Step 3d and continue.
+On `status=ok`, set `"linkedin": "ok"`. If `unique_jobs=0`, skip Step 3d
+(nothing to enrich).
 
-## Step 3d — LinkedIn Chrome enrichment (PRE-SCORE, this profile)
-Critical step: pulls salary + description from each LinkedIn page so the scorer
-in Step 3e can rank fairly.
+## Step 3d — LinkedIn Chrome enrichment via sub-agent (PRE-SCORE, this profile)
+Skip if Step 3c set `"linkedin"` to anything other than `ok`, or if Step 3c
+returned `unique_jobs=0`.
 
-a. Call `mcp__Claude_in_Chrome__list_connected_browsers`. Pick first with `isLocal=true`.
-   If none connected, skip this step (write `{}` to enrichments file) — pipeline still works, just less precise.
-b. Call `mcp__Claude_in_Chrome__select_browser` with that deviceId.
-c. Call `mcp__Claude_in_Chrome__tabs_context_mcp` with `createIfEmpty=true`. Capture tabId.
+**Do NOT call the `Claude_in_Chrome` MCP from the main assistant context.**
+Spawn a sub-agent that drives Chrome in its own context window — LinkedIn
+page text (which dominates the LinkedIn token cost) never enters the
+parent's 200K budget.
 
-For each entry in the sidecar JSON, run `mcp__Claude_in_Chrome__browser_batch`:
-  ```json
-  [
-    {"name": "navigate", "input": {"tabId": <ID>, "url": <entry.url>}},
-    {"name": "computer", "input": {"action": "wait", "duration": 3, "tabId": <ID>}},
-    {"name": "get_page_text", "input": {"tabId": <ID>}}
-  ]
-  ```
+Read the sub-agent prompt template via the `Read` tool:
+  `{PROJECT_DIR}/pipeline/agent_prompts/linkedin_enrich_subagent.md`
 
-From the page text, extract:
-  - Salary range — look for "$X - $Y per year", "$X - $Y", "$XK - $YK", etc. Format as `"$X - $Y a year"` matching the parser format. Use "N/A" if absent.
-  - Posted age (e.g. "3 days ago"), applicant count.
-  - 2-3 sentence factual description of the role/team. Avoid company boilerplate.
-  - Final summary format: `"**$X – $Y** · N applicants · posted X ago. <description>"` (under 350 chars).
+In the body of that file (everything after the `---` separator), substitute:
+- `{{PROFILE}}` → the profile name
+- `{{PROFILE_DIR}}` → `$PROFILE_DIR`
+- `{{PROJECT_DIR}}` → `{PROJECT_DIR}`
+- `{{TODAY}}` → the TODAY date string
+- `{{SIDECAR_PATH}}` → `$PROFILE_DIR/data/linkedin_raw/{TODAY}_normalized.jobs.json`
 
-Build:
-  ```json
-  { "<hash>": { "compensation": "$X - $Y a year", "summary": "<formatted summary>" } }
-  ```
+Call the `Agent` tool with:
+- `subagent_type`: `"general-purpose"`
+- `description`: `"LinkedIn Chrome enrichment (<profile>)"`
+- `prompt`: the substituted body
 
-Write to `/tmp/<profile>_linkedin_chrome_enrichments_{TODAY}.json`.
+The sub-agent returns one line. Parse with best-effort regex: extract the
+first `status=(\S+)`, `enriched=(\d+)`, `skipped=(\d+)`. Valid statuses:
+- `status=ok` — keep `"linkedin": "ok"`.
+- `status=no_jobs` — keep `"linkedin"` as-is (3c already set it).
+- `status=chrome_unavailable` — downgrade source-status to
+  `"linkedin": "chrome_unavailable"`. The pipeline still works; Step 3g
+  will retry these as the post-score fallback.
+- `status=login_wall` — downgrade to `"linkedin": "login_wall"`. Same
+  fallback behavior.
+- `status=splicer_error` — set `"linkedin": "splicer_error"`. Inspect
+  manually after the run.
+- Unparseable — set `"linkedin": "protocol_error"`, continue.
 
-After the loop, close the tab via `mcp__Claude_in_Chrome__tabs_close_mcp`.
-
-Apply the enrichments to the LinkedIn markdown:
-  ```bash
-  python3 {PROJECT_DIR}/pipeline/enrich_linkedin_md.py \
-    $PROFILE_DIR/data/linkedin_raw/{TODAY}_normalized.txt \
-    /tmp/<profile>_linkedin_chrome_enrichments_{TODAY}.json
-  ```
+The sub-agent has already written
+`/tmp/<profile>_linkedin_chrome_enrichments_{TODAY}.json` and run
+`enrich_linkedin_md.py`, so no further action is needed for this step in
+the parent — proceed to Step 3e.
 
 ## Step 3e — Run the parser/scorer with all available sources (this profile)
 Build the input file list dynamically — only pass paths that exist:
@@ -256,24 +296,131 @@ Example:
      $PROFILE_DIR/digest_archive/{TODAY}.md
   ```
 
-## Step 3k — Send digest email (this profile, gated by email.json)
+## Step 3k — Prepare digest payload, create draft, AND send via Chrome (this profile, gated by email.json)
+
+**End-state required:** the digest email must be *sent* (not merely drafted) by
+the end of this step whenever the user's environment supports it. `create_draft`
+alone is NEVER the success state — it is one half of a two-half flow. The
+"drafted only" outcome is reserved for documented failure modes; if Chrome is
+connected and you reach the draft, you MUST continue into the Chrome Send flow.
+
+The Cowork sandbox blocks SMTP, so this step stages the message via the Gmail
+MCP `create_draft` tool and then sends it by driving the user's logged-in Gmail
+tab via the `mcp__Claude_in_Chrome__*` tools.
+
+### 3k.1 — Build the payload
+Run via bash:
   ```bash
-  python3 {PROJECT_DIR}/pipeline/send_digest_email.py \
+  python3 {PROJECT_DIR}/pipeline/prepare_digest_email.py \
     $PROFILE_DIR \
     {PROJECT_DIR}
   ```
 
-The script reads `$PROFILE_DIR/email.json` and `{PROJECT_DIR}/.env`. It silently
-skips (exit 0) if email is disabled, the recipient is missing, or no matches
-fall in the configured tiers. SMTP errors exit non-zero — log them and continue
-to the next profile (don't abort the whole run).
+The script reads `$PROFILE_DIR/email.json` and prints a single JSON object
+on stdout. Parse it.
+
+If `payload.skip == true`, log `payload.reason`, set this profile's send
+status to `"skipped"`, and skip the rest of Step 3k for this profile.
+Continue to the next profile.
+
+The payload has: `to` (array), `subject`, `subject_marker`, `htmlBody`,
+`body`, `total`.
+
+### 3k.2 — Create the Gmail draft
+Call `mcp__{GMAIL_MCP_ID}__create_draft` with:
+  - `to`: `payload.to`
+  - `subject`: `payload.subject`
+  - `htmlBody`: `payload.htmlBody`
+  - `body`: `payload.body`
+
+If `linkedin.json.gmail_mcp_id` overrides the Gmail MCP for this profile,
+use that override here too.
+
+Capture the returned draft id for logging.
+
+If `create_draft` errors, log the failure, mark this profile's send status as
+`"drafted_failed"`, and continue to the next profile. Do NOT proceed to 3k.3
+in that case.
+
+### 3k.3 — Connect Chrome and open Drafts
+This step is REQUIRED whenever `create_draft` succeeded. Do not skip it as a
+"safer" default — the full send flow is the success path.
+
+a. Call `mcp__Claude_in_Chrome__list_connected_browsers`. Pick first with
+   `isLocal=true`. If none connected, mark this profile's send status as
+   `"drafted_chrome_unavailable"` and continue to the next profile — this is
+   the ONLY acceptable reason to stop at "drafted".
+b. Call `mcp__Claude_in_Chrome__select_browser` with that deviceId.
+c. Call `mcp__Claude_in_Chrome__tabs_context_mcp` with `createIfEmpty=true`.
+   Capture tabId.
+d. Run a `mcp__Claude_in_Chrome__browser_batch` with:
+   ```json
+   [
+     {"name": "navigate", "input": {"tabId": <ID>, "url": "https://mail.google.com/mail/u/0/#drafts"}},
+     {"name": "computer", "input": {"action": "wait", "duration": 4, "tabId": <ID>}},
+     {"name": "javascript_tool", "input": {"action": "javascript_exec", "tabId": <ID>, "text": "(()=>{const t=document.title; const u=location.href; const has=document.body.innerText.includes(\"You don't have any saved drafts\"); return JSON.stringify({title:t, url:u, empty:has});})()"}}
+   ]
+   ```
+
+If `title` does not include the email address that owns the Gmail MCP (i.e.
+the browser is logged into a different Google account than the MCP wrote the
+draft to), mark this profile `"drafted_wrong_account"` and continue.
+
+If `empty` is true, retry the batch once after another 4-second wait. If still
+empty, mark this profile `"drafted_not_visible"` and continue.
+
+### 3k.4 — Open the draft by subject_marker and click Send
+
+Run a `mcp__Claude_in_Chrome__browser_batch` to locate the draft row, click
+into it, then click Send:
+```json
+[
+  {"name": "javascript_tool", "input": {"action": "javascript_exec", "tabId": <ID>, "text": "(()=>{const m=<JSON_STRING(payload.subject_marker)>; const rows=document.querySelectorAll('tr.zA'); for(const r of rows){if((r.innerText||'').includes(m)){r.querySelector('span.bog, span.bqe, .y6')?.click() || r.click(); return 'opened';}} return 'not_found';})()"}},
+  {"name": "computer", "input": {"action": "wait", "duration": 3, "tabId": <ID>}},
+  {"name": "javascript_tool", "input": {"action": "javascript_exec", "tabId": <ID>, "text": "(()=>{const btns=document.querySelectorAll('[role=\"button\"],div'); for(const b of btns){const dt=b.getAttribute('data-tooltip')||''; const al=b.getAttribute('aria-label')||''; const tx=(b.innerText||'').trim(); if(/^Send\\b/.test(dt)||/^Send\\b/.test(al)||tx==='Send'){b.click(); return 'sent_clicked';}} return 'no_send_btn';})()"}},
+  {"name": "computer", "input": {"action": "wait", "duration": 3, "tabId": <ID>}},
+  {"name": "javascript_tool", "input": {"action": "javascript_exec", "tabId": <ID>, "text": "JSON.stringify({url:location.href, sentToast: /Message sent|Your message has been sent/i.test(document.body.innerText)})"}}
+]
+```
+
+`<JSON_STRING(payload.subject_marker)>` means a JSON-encoded string literal
+of `payload.subject_marker` (so quotes/em-dashes survive).
+
+The send is successful when EITHER:
+- the final URL no longer contains `?compose=`, OR
+- the `sentToast` regex matched.
+
+If neither: re-run the second JS in the batch once after a 2-second wait. If
+still not sent, mark this profile `"drafted_send_failed"` and continue.
+
+On success, set this profile's send status to `"sent"`.
+
+### 3k.5 — Close the tab
+Call `mcp__Claude_in_Chrome__tabs_close_mcp` with the tabId from 3k.3.
 
 # Step 4 — Summary
 After all profiles are done, reply with one line per profile plus a header:
 ```
 Daily digest updated for N profiles:
-  • <profile1>: <X> new today, <Y> strong matches across <sources>, <Ki> Indeed enriched, <Kl> LinkedIn enriched
+  • <profile1>: <X> new today, <Y> strong matches across <sources>, <Ki> Indeed enriched, <Kl> LinkedIn enriched — send: <send_status>
   • <profile2>: ...
 ```
+
+Allowed `<send_status>` values from Step 3k:
+- `sent` — expected default. The digest email was successfully sent via the
+  Chrome auto-send flow.
+- `skipped` — Step 3k chose to skip (email disabled, no recipient, or no
+  matches in the configured tiers). Omit the `— send: skipped` suffix in
+  this case if you prefer; or include it for visibility.
+- `drafted_failed` — `create_draft` itself failed.
+- `drafted_chrome_unavailable` — Chrome wasn't connected at run time.
+- `drafted_wrong_account` — Chrome was logged into a different Google
+  account than the Gmail MCP wrote the draft to.
+- `drafted_not_visible` — The draft didn't appear in the Drafts list after
+  navigation + retry.
+- `drafted_send_failed` — Found the draft and clicked Send, but neither URL
+  change nor "Message sent" toast confirmed the send.
+
+Anything starting with `drafted_` is a signal that something needs attention.
 
 If any profile was skipped (missing config, placeholder text, etc.), include that as a separate line: `"  • <name>: skipped — <reason>"`.

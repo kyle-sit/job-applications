@@ -144,6 +144,20 @@ description. With Chrome, they're enriched alongside Indeed listings.
 
 The Chrome session is shared across profiles — only one sign-in needed.
 
+### Note: LinkedIn fetch + enrichment run as sub-agents
+
+Steps 3c (Gmail) and 3d (Chrome enrichment) of the daily run are dispatched
+to a sub-agent so the bulky thread bodies and page text never enter the
+main assistant's 200K context window. The sub-agent prompts live at:
+- `pipeline/agent_prompts/linkedin_fetch_subagent.md`
+- `pipeline/agent_prompts/linkedin_enrich_subagent.md`
+
+This is purely a context-window optimization — no extra setup, no new
+credentials, no behavior difference visible from the digest. If you ever
+need to debug the LinkedIn flow, run those prompts manually against a
+profile by reading the file, doing the placeholder substitution shown at
+the top, and invoking the sub-agent.
+
 ---
 
 ## Step 8 — Run the install prompt
