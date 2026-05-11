@@ -208,6 +208,15 @@ The parser auto-loads scoring rules from `$PROFILE_DIR/scoring.json` and detects
 This step writes:
   - `$PROFILE_DIR/needs_enrichment.json` — Indeed strong matches needing get_job_details
   - `$PROFILE_DIR/needs_enrichment_linkedin.json` — LinkedIn jobs that didn't get a summary in Step 3d
+  - `$PROFILE_DIR/data/cached_enrichments_{TODAY}.json` — pre-seeded summaries
+    for any Strong-tier hashes already in the enrichment cache. Step 3h
+    merges this with the fresh-fetch enrichments before splicing.
+
+The parser auto-loads the enrichment cache from
+`$PROFILE_DIR/data/enrichment_cache.json` and filters cached hashes OUT of
+the two `needs_enrichment*.json` files — so Steps 3f and 3g only fetch the
+delta. This is the per-job rate-limit relief: if we enriched `JOB_3870`
+yesterday, we don't re-spend an Indeed `get_job_details` call on it today.
 
 ## Step 3f — Enrich Indeed strong matches with full descriptions (this profile)
 Read `$PROFILE_DIR/needs_enrichment.json`. For each entry (cap at 15):

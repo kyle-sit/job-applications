@@ -454,25 +454,73 @@ def main():
     if not filtered:
         lines.append("_No matches passed the filter today._\n")
 
-    # Indeed strong matches that need a get_job_details enrichment
+    # ---- Enrichment cache: skip API calls for hashes we've already enriched.
+    # Cache lives at $PROFILE_DIR/data/enrichment_cache.json alongside seen_jobs.json.
+    # Schema: { "<hash>": {"summary": "...", "source": "Indeed"|"LinkedIn",
+    #                       "date_cached": "YYYY-MM-DD"} }
+    # If seen_path was passed, use its parent (data/) as the cache directory.
+    cache_path = (seen_path.parent / "enrichment_cache.json") if seen_path else None
+    cache_data = {}
+    if cache_path and cache_path.exists():
+        try:
+            cache_data = json.loads(cache_path.read_text())
+        except json.JSONDecodeError:
+            cache_data = {}  # corrupt cache → start fresh; not fatal
+
+    def cached_summary(h: str) -> str:
+        entry = cache_data.get(h)
+        if isinstance(entry, dict):
+            return (entry.get("summary") or "").strip()
+        return ""
+
+    # Indeed strong matches that need a get_job_details enrichment — but skip
+    # hashes already in the cache.
     needs_indeed = [
         {"hash": j["hash"], "job_id": j["job_id"], "title": j["title"],
          "company": j["company"], "url": j["url"]}
         for j in high
-        if j.get("source", "Indeed") == "Indeed" and not (j.get("summary") or "").strip()
+        if j.get("source", "Indeed") == "Indeed"
+           and not (j.get("summary") or "").strip()
+           and not cached_summary(j["hash"])
     ]
     (out_path.parent / "needs_enrichment.json").write_text(json.dumps(needs_indeed, indent=2))
 
-    # LinkedIn jobs that didn't get a summary in pre-score Chrome enrichment
+    # LinkedIn jobs that didn't get a summary in pre-score Chrome enrichment —
+    # also skip hashes already in the cache.
     needs_linkedin = [
         {"hash": j["hash"], "job_id": j["job_id"], "title": j["title"],
          "company": j["company"], "url": j["url"]}
         for j in filtered
-        if j.get("source") == "LinkedIn" and not (j.get("summary") or "").strip()
+        if j.get("source") == "LinkedIn"
+           and not (j.get("summary") or "").strip()
+           and not cached_summary(j["hash"])
     ]
     (out_path.parent / "needs_enrichment_linkedin.json").write_text(
         json.dumps(needs_linkedin, indent=2)
     )
+
+    # Pre-seed today's enrichments file with cached summaries for any Strong-tier
+    # Indeed jobs (or LinkedIn fallback jobs) whose hashes ARE cached. Step 3h
+    # merges this with the fresh-fetch enrichments before splicing.
+    cached_today = {}
+    for j in high:
+        if j.get("source", "Indeed") == "Indeed" and not (j.get("summary") or "").strip():
+            s = cached_summary(j["hash"])
+            if s:
+                cached_today[j["hash"]] = s
+    for j in filtered:
+        if j.get("source") == "LinkedIn" and not (j.get("summary") or "").strip():
+            s = cached_summary(j["hash"])
+            if s:
+                cached_today[j["hash"]] = s
+    # Sidecar lives next to the cache itself (in data/) so consumers can find
+    # it predictably alongside seen_jobs.json and enrichment_cache.json.
+    if seen_path:
+        seen_path.parent.mkdir(parents=True, exist_ok=True)
+        (seen_path.parent / f"cached_enrichments_{today_str}.json").write_text(
+            json.dumps(cached_today, indent=2)
+        )
+        print(f"cached_summaries_reused={len(cached_today)}", file=sys.stderr)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines))
