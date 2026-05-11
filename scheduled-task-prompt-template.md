@@ -89,20 +89,34 @@ the file is missing or still contains placeholder text (`REPLACE-WITH-...`),
 skip this profile and log: `"Skipping profile <name>: search_queries.json not personalized."`
 
 ## Step 3b — Indeed searches (this profile)
-For every (role × location) pair, call `mcp__{INDEED_MCP_ID}__search_jobs` in parallel:
+For every (role × location) pair, call `mcp__{INDEED_MCP_ID}__search_jobs`:
   - `search`: the role string
   - `location`: the location string
   - `country_code`: from config (default "US")
   - `job_type`: from config (default "fulltime")
 
-Indeed has historically tolerated parallel bursts; if you see rate-limit
-errors here, fall back to a serial-with-`sleep 1` pattern.
+**Run these calls SERIALLY with a 1-second sleep between each call.** Do NOT
+issue them as a parallel burst. Indeed's per-account rate limiter has
+historically tripped on parallel bursts and, once tripped, stays sticky for
+minutes (every retry re-extends the cooldown rather than letting it lapse).
+Serial-with-sleep keeps the call rate under the limiter's threshold and adds
+only ~N seconds per profile.
 
-Concatenate every search response's "result" field (with blank lines between) and Write to:
+If you still see a `Rate limit exceeded` error mid-loop, switch to
+exponential backoff for that one call: start at 5s, double on each retry
+(5 → 10 → 20 → 40), cap at 60s, and after 3 consecutive failures for the
+same (role × location) skip it and continue with the rest of the matrix.
+Record which (role × location) pairs were skipped so the source-status
+reflects partial coverage.
+
+Concatenate every successful search response's "result" field (with blank
+lines between) and Write to:
   `$PROFILE_DIR/data/raw_searches/{TODAY}.txt`
 
 If every Indeed call errored out, skip writing the file and set
-source-status `"indeed": "<short reason>"`. Otherwise set `"indeed": "ok"`.
+source-status `"indeed": "<short reason>"`. If some succeeded and some
+failed, set `"indeed": "rate_limited_partial"`. Otherwise set
+`"indeed": "ok"`.
 
 ## Step 3c — LinkedIn email alerts via sub-agent (this profile, gated by linkedin.json)
 Read `$PROFILE_DIR/linkedin.json` if it exists. If the file is missing, or
@@ -219,12 +233,25 @@ delta. This is the per-job rate-limit relief: if we enriched `JOB_3870`
 yesterday, we don't re-spend an Indeed `get_job_details` call on it today.
 
 ## Step 3f — Enrich Indeed strong matches with full descriptions (this profile)
-Read `$PROFILE_DIR/needs_enrichment.json`. For each entry (cap at 15):
+Read `$PROFILE_DIR/needs_enrichment.json`. **Note:** parse_and_score has
+already removed hashes that exist in the enrichment cache, so this list
+contains only NEW Strong-tier Indeed jobs that need a fresh fetch. The
+cached summaries for previously-enriched jobs are in
+`$PROFILE_DIR/data/cached_enrichments_{TODAY}.json` and will be merged in
+at Step 3h.
+
+For each entry (cap at 15):
   - Call `mcp__{INDEED_MCP_ID}__get_job_details` with the entry's `job_id`.
-  - Write a 2-3 sentence factual summary capturing what the team does, key skills/seniority, distinctive scope. Avoid company boilerplate. Under 350 chars.
+  - Run these calls SERIALLY with a 1-second sleep between each — same
+    rate-limit avoidance as Step 3b.
+  - Write a 2-3 sentence factual summary capturing what the team does, key
+    skills/seniority, distinctive scope. Avoid company boilerplate. Under
+    350 chars.
   - Build dict: `{ <hash>: <summary_text> }`
 
-Write to `/tmp/<profile>_job_enrichments_indeed_{TODAY}.json`.
+Write to `/tmp/<profile>_job_enrichments_indeed_{TODAY}.json`. If the
+needs_enrichment list is empty (everything was cached), still write `{}` so
+Step 3h's merge logic is uniform.
 
 ## Step 3g — LinkedIn fallback enrichment (this profile)
 Read `$PROFILE_DIR/needs_enrichment_linkedin.json`. If empty or missing, skip.
@@ -232,16 +259,36 @@ Otherwise re-run the same Chrome flow as Step 3d for these stragglers, building 
 Write to `/tmp/<profile>_job_enrichments_linkedin_{TODAY}.json`.
 
 ## Step 3h — Splice all post-score enrichments (this profile)
+Merge three sources before splicing: the cached summaries (from Step 3e),
+this run's fresh Indeed enrichments (3f), and this run's fresh LinkedIn
+fallback enrichments (3g). Cache takes lowest precedence so a fresh fetch
+overrides a stale cached entry if both somehow exist for the same hash.
+
   ```bash
   python3 -c "import json,os; \
+    c=json.load(open('$PROFILE_DIR/data/cached_enrichments_{TODAY}.json')) if os.path.exists('$PROFILE_DIR/data/cached_enrichments_{TODAY}.json') else {}; \
     a=json.load(open('/tmp/<profile>_job_enrichments_indeed_{TODAY}.json')) if os.path.exists('/tmp/<profile>_job_enrichments_indeed_{TODAY}.json') else {}; \
     b=json.load(open('/tmp/<profile>_job_enrichments_linkedin_{TODAY}.json')) if os.path.exists('/tmp/<profile>_job_enrichments_linkedin_{TODAY}.json') else {}; \
-    json.dump({**a, **b}, open('/tmp/<profile>_job_enrichments_{TODAY}.json', 'w'))"
+    json.dump({**c, **a, **b}, open('/tmp/<profile>_job_enrichments_{TODAY}.json', 'w'))"
 
   python3 {PROJECT_DIR}/pipeline/splice_enrichments.py \
     $PROFILE_DIR/digest.md \
     /tmp/<profile>_job_enrichments_{TODAY}.json
   ```
+
+After splicing succeeds, write this run's fresh enrichments back into the
+cache so the next run can skip them:
+
+  ```bash
+  python3 {PROJECT_DIR}/pipeline/update_enrichment_cache.py \
+    $PROFILE_DIR/data/enrichment_cache.json \
+    /tmp/<profile>_job_enrichments_indeed_{TODAY}.json \
+    /tmp/<profile>_job_enrichments_linkedin_{TODAY}.json
+  ```
+
+`update_enrichment_cache.py` skips missing input files silently, so this
+works even if 3f or 3g was skipped earlier. It also infers the source label
+(`Indeed` / `LinkedIn`) from the filename.
 
 ## Step 3h.5 — Profile-fit re-rank for the Strong tier (this profile)
 At this point, every Strong-tier job in `$PROFILE_DIR/digest.md` has its full
