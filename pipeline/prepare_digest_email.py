@@ -75,6 +75,11 @@ def split_into_tiers(digest_text: str) -> dict:
         body = digest_text[body_start:body_end]
         blocks = re.split(r"(?=^### )", body, flags=re.MULTILINE)
         blocks = [b.strip() for b in blocks if b.strip()]
+        # Drop blocks that don't start with the job-header marker. The raw
+        # split leaves a leading <!--HASH:JOB_xxx--> comment as its own
+        # non-empty block, which would otherwise inflate every count
+        # (subject line, tier headers, footer total) by one per tier.
+        blocks = [b for b in blocks if b.startswith("### ")]
         tiers[tier_key] = blocks
     return tiers
 
@@ -145,14 +150,17 @@ def render_html(profile_name, header_title, header_summary, tier_blocks, total,
     if source_notice_html:
         parts.append(source_notice_html)
     for tier_key, blocks in tier_blocks.items():
-        if not blocks:
+        # Count from parsed jobs, not raw blocks — the raw split leaves a
+        # leading orphan <!--HASH:JOB_xxx--> comment as a non-empty block
+        # which fails parse_block but inflates len(blocks). Without this,
+        # the header would say e.g. "Strong Matches (3)" while only 2 are
+        # rendered (see the silent `if not j: continue` below).
+        parsed = [p for p in (parse_block(b) for b in blocks) if p]
+        if not parsed:
             continue
         label, color = TIER_RENDER[tier_key]
-        parts.append(f'<h2 style="color:{color}">{label} ({len(blocks)})</h2>')
-        for block in blocks:
-            j = parse_block(block)
-            if not j:
-                continue
+        parts.append(f'<h2 style="color:{color}">{label} ({len(parsed)})</h2>')
+        for j in parsed:
             new_badge = '<span class="new-badge">new</span>' if "🆕" in j["new"] else ""
             meta_text = j["meta"].replace("**", "").replace("_", "")
             # HTML-escape every user-controlled string before splicing into the
@@ -191,14 +199,13 @@ def render_plaintext(header_title, header_summary, tier_blocks, source_notice_te
     if source_notice_text:
         out += [source_notice_text, ""]
     for tier_key, blocks in tier_blocks.items():
-        if not blocks:
+        # Count from parsed jobs, not raw blocks — see render_html for why.
+        parsed = [p for p in (parse_block(b) for b in blocks) if p]
+        if not parsed:
             continue
         label, _ = TIER_RENDER[tier_key]
-        out += ["", f"== {label} ({len(blocks)}) ==", ""]
-        for block in blocks:
-            j = parse_block(block)
-            if not j:
-                continue
+        out += ["", f"== {label} ({len(parsed)}) ==", ""]
+        for j in parsed:
             new_marker = " [NEW]" if "🆕" in j["new"] else ""
             out += [
                 f"• {j['title']}{new_marker}",
