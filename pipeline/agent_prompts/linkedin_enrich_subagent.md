@@ -54,14 +54,23 @@ stdout**.
 
 5. Take the first 25 entries of the sidecar. For each entry, in sequence:
 
-   a. Call `mcp__Claude_in_Chrome__browser_batch` with:
+   a. Call `mcp__Claude_in_Chrome__browser_batch` with an initial 8-second
+      wait (LinkedIn is a heavy SPA — under ~6 seconds the page often
+      still shows only the chrome and looks empty even when logged in):
       ```json
       [
         {"name": "navigate", "input": {"tabId": <tabId>, "url": "<entry.url>"}},
-        {"name": "computer", "input": {"action": "wait", "duration": 3, "tabId": <tabId>}},
+        {"name": "computer", "input": {"action": "wait", "duration": 8, "tabId": <tabId>}},
         {"name": "get_page_text", "input": {"tabId": <tabId>}}
       ]
       ```
+
+      If the returned page text length is under ~1500 chars OR contains
+      neither the company name nor any of `applicant`, `Apply`, `About the
+      job`, the page is probably still hydrating. Re-call `browser_batch`
+      with just `{"action":"wait","duration":4}` then another
+      `get_page_text` (one retry, max). Don't navigate again — that resets
+      the SPA.
 
    b. From the returned page text, extract:
       - **Salary range** — look for `$X - $Y per year`, `$X - $Y a year`,
@@ -76,10 +85,20 @@ stdout**.
         (Use `**N/A**` if salary absent; `<unknown> applicants` if absent;
         omit the `posted X ago` segment if absent.)
 
-   c. If the page returns a LinkedIn login wall (e.g. the page text mentions
-      "Join LinkedIn" / "Sign in" prominently and no job content), stop
-      processing further entries and treat this and all remaining entries
-      as skipped. Set `<halt_reason>` to `login_wall`.
+   c. Login-wall detection — be CONSERVATIVE. Only conclude `login_wall`
+      when ALL of these hold on the SAME page:
+        - page text contains a "Join LinkedIn" or "Sign in to see who" or
+          "Sign in to view" call-to-action prominently (top of body), AND
+        - page text does NOT contain "Apply", "About the job", "applicant",
+          or any salary pattern, AND
+        - page text length is under ~1500 chars (a real job page is 5K+).
+      A sparse page that contains "Apply" or "About the job" is just slow
+      to hydrate — re-poll with another 4-second wait + `get_page_text`
+      rather than bailing.
+      If, AND ONLY IF, all three login-wall conditions hold, stop processing
+      further entries and treat this and all remaining as skipped. Set
+      `<halt_reason>` to `login_wall`. **Confirm on at least 2 consecutive
+      pages before halting** — a single odd page is not enough signal.
 
    d. If `browser_batch` errors out for a single entry, count it as skipped
       and continue to the next entry.
