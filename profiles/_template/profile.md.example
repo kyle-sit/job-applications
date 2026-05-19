@@ -3,6 +3,16 @@
 > **Edit this file with your own background and target roles.** The pipeline
 > uses it to give Claude context when summarizing job descriptions and ranking
 > matches. The more specific you are, the better the matching.
+>
+> **How the pipeline uses this file.** There are two scoring stages. Stage 1
+> (`parse_and_score.py`) is mechanical — it scores every job on title keywords,
+> salary, recency, and location, and uses this file only loosely (for search
+> queries and constraints). Stage 2 (`apply_profile_fit.py`) runs *after*
+> enrichment splices full descriptions into Strong-tier jobs: an agent reads
+> this entire profile alongside each job's title + description and emits a
+> 0–5 fit score that gets added to the total. So prose in `Target role profile`
+> directly shapes Stage 2 rankings — the more concrete you are about scope,
+> stage, sector, and what's a non-fit, the better.
 
 ## Background
 - **Current role:** {{your current job title and company, e.g. "Marketing Manager at Acme Corp"}}
@@ -15,6 +25,22 @@ runs a separate search per role. Examples:
 - {{Senior Marketing Manager}}
 - {{Director of Marketing}}
 - {{Head of Growth}}
+
+### Target role profile
+A short prose description of what the ideal role actually looks like. The
+pipeline's stage-2 profile-fit agent reads this when scoring Strong-tier
+matches against full job descriptions, so be specific about scope, company
+stage, sector preferences, and the kind of work you want to be doing.
+
+Example: "Senior IC or first-time lead at a Series A–C B2B SaaS company.
+Owns a full marketing function or a major channel end-to-end. Mission-aligned
+with developer tools, fintech, or climate preferred. Not a fit for agency
+roles or very early-stage (pre-seed) companies."
+
+> **Multiple resume framings?** If you have more than one resume for different
+> role types (e.g. Chief of Staff vs. Program Manager vs. Partnerships), repeat
+> this "Target role profile" block per framing with its own highlighted skills
+> and target-role description. See `profiles/elissa/profile.md` for an example.
 
 ## Core skills / specialties
 What you bring to a role — used by the scorer to weight title relevance.
