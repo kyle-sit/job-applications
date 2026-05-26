@@ -70,16 +70,19 @@ Define `PROFILE_DIR={PROJECT_DIR}/profiles/<profile>` and create needed
 subdirs once per profile:
 ```bash
 mkdir -p $PROFILE_DIR/data/raw_searches \
-         $PROFILE_DIR/data/linkedin_raw $PROFILE_DIR/digest_archive
+         $PROFILE_DIR/data/linkedin_raw \
+         $PROFILE_DIR/data/job_boards_raw \
+         $PROFILE_DIR/digest_archive
 ```
 
 **Source-status tracking.** Throughout this profile's run, maintain a JSON
 object in memory that records each source's status, e.g. `{"indeed": "ok",
-"linkedin": "ok"}`. If a source errors out (rate-limited, no connector, no
-creds, parser failure, etc.), set its status to a short reason string like
-`"rate_limited"`, `"chrome_unavailable"`, or `"gmail_error"` and STOP making
-further calls for that source for this profile — but continue with the other
-sources. At the end of the profile run (Step 3i below), write this object to
+"linkedin": "ok", "job_boards": "ok"}`. If a source errors out (rate-limited,
+no connector, no creds, parser failure, etc.), set its status to a short
+reason string like `"rate_limited"`, `"chrome_unavailable"`, or
+`"gmail_error"` and STOP making further calls for that source for this
+profile — but continue with the other sources. At the end of the profile run
+(Step 3i below), write this object to
 `$PROFILE_DIR/data/source_status_{TODAY}.json` so the email digest can render
 a banner about which sources were missing.
 
@@ -88,35 +91,50 @@ Read `$PROFILE_DIR/search_queries.json` for `role_queries` and `locations`. If
 the file is missing or still contains placeholder text (`REPLACE-WITH-...`),
 skip this profile and log: `"Skipping profile <name>: search_queries.json not personalized."`
 
-## Step 3b — Indeed searches (this profile)
-For every (role × location) pair, call `mcp__{INDEED_MCP_ID}__search_jobs`:
-  - `search`: the role string
-  - `location`: the location string
-  - `country_code`: from config (default "US")
-  - `job_type`: from config (default "fulltime")
+## Step 3b — Indeed searches via sub-agent (this profile)
 
-**Run these calls SERIALLY with a 1-second sleep between each call.** Do NOT
-issue them as a parallel burst. Indeed's per-account rate limiter has
-historically tripped on parallel bursts and, once tripped, stays sticky for
-minutes (every retry re-extends the cooldown rather than letting it lapse).
-Serial-with-sleep keeps the call rate under the limiter's threshold and adds
-only ~N seconds per profile.
+**Do NOT call the Indeed `search_jobs` MCP from the main assistant context.**
+The search matrix (one call per role × location pair, run serially so the
+rate limiter doesn't trip — often 20-40 calls per profile) is the single
+biggest consumer of the parent's per-run TURN budget and has caused runs to
+hit the max-turns guardrail. Spawn a sub-agent that runs the whole matrix in
+its own turn/context window and returns one status line — same pattern as the
+LinkedIn steps below.
 
-If you still see a `Rate limit exceeded` error mid-loop, switch to
-exponential backoff for that one call: start at 5s, double on each retry
-(5 → 10 → 20 → 40), cap at 60s, and after 3 consecutive failures for the
-same (role × location) skip it and continue with the rest of the matrix.
-Record which (role × location) pairs were skipped so the source-status
-reflects partial coverage.
+Read the sub-agent prompt template via the `Read` tool:
+  `{PROJECT_DIR}/pipeline/agent_prompts/indeed_search_subagent.md`
 
-Concatenate every successful search response's "result" field (with blank
-lines between) and Write to:
-  `$PROFILE_DIR/data/raw_searches/{TODAY}.txt`
+In the body of that file (everything after the `---` separator that ends
+the placeholder list), substitute:
+- `{{PROFILE}}` → the profile name
+- `{{PROFILE_DIR}}` → `$PROFILE_DIR`
+- `{{PROJECT_DIR}}` → `{PROJECT_DIR}`
+- `{{TODAY}}` → the TODAY date string
+- `{{INDEED_MCP_ID}}` → `{INDEED_MCP_ID}`
 
-If every Indeed call errored out, skip writing the file and set
-source-status `"indeed": "<short reason>"`. If some succeeded and some
-failed, set `"indeed": "rate_limited_partial"`. Otherwise set
-`"indeed": "ok"`.
+The sub-agent reads `$PROFILE_DIR/search_queries.json` itself, runs every
+(role × location) pair SERIALLY (with exponential backoff on any
+`Rate limit exceeded`, capping at 60s and skipping a pair after 3 failures),
+concatenates the successful results, and writes them to
+`$PROFILE_DIR/data/raw_searches/{TODAY}.txt`.
+
+Call the `Agent` tool with:
+- `subagent_type`: `"general-purpose"`
+- `description`: `"Indeed search (<profile>)"`
+- `prompt`: the substituted body
+
+The sub-agent returns one line. Parse it with best-effort regex: extract the
+first `status=(\S+)`. Map status to source-status:
+- `status=ok` — set `"indeed": "ok"`.
+- `status=rate_limited_partial` — set `"indeed": "rate_limited_partial"`.
+- `status=rate_limited` — set `"indeed": "rate_limited"` (no raw file was
+  written; Step 3e simply won't receive an Indeed input path).
+- `status=config_error` — this profile's `search_queries.json` is missing or
+  still a placeholder; skip this profile entirely and log
+  `"Skipping profile <name>: search_queries.json not personalized."`
+- Anything else / unparseable — treat as `"indeed": "protocol_error"` and
+  continue to the LinkedIn steps (Step 3e will skip the Indeed input if the
+  raw file is absent).
 
 ## Step 3c — LinkedIn email alerts via sub-agent (this profile, gated by linkedin.json)
 Read `$PROFILE_DIR/linkedin.json` if it exists. If the file is missing, or
@@ -204,7 +222,45 @@ first `status=(\S+)`, `enriched=(\d+)`, `skipped=(\d+)`. Valid statuses:
 The sub-agent has already written
 `/tmp/<profile>_linkedin_chrome_enrichments_{TODAY}.json` and run
 `enrich_linkedin_md.py`, so no further action is needed for this step in
-the parent — proceed to Step 3e.
+the parent — proceed to Step 3d.5.
+
+## Step 3d.5 — Job boards fetch (this profile, gated by job_boards.json)
+Skip and set source-status `"job_boards": "disabled"` if
+`$PROFILE_DIR/job_boards.json` is missing or has no boards with
+`enabled: true`. Otherwise run the dispatcher:
+
+```bash
+python3 -m pipeline.job_boards $PROFILE_DIR {TODAY}
+```
+
+Run from `{PROJECT_DIR}` (the working directory must be the project root so
+the `pipeline.job_boards` module is importable). The dispatcher prints a
+single JSON line on stdout summarizing the run, e.g.:
+
+```json
+{"total": 47, "per_board": {"climate_draft": 20, "elemental_impact": 20, "terra_do": 7},
+ "wrote_raw": "$PROFILE_DIR/data/job_boards_raw/{TODAY}.txt",
+ "wrote_enrichments": "/tmp/<profile>_job_enrichments_jobboards_{TODAY}.json",
+ "status": "ok"}
+```
+
+The dispatcher writes two files for downstream consumption:
+- `$PROFILE_DIR/data/job_boards_raw/{TODAY}.txt` — markdown stubs in the
+  same format `hn_fetcher.py` produces. Step 3e adds this to the
+  parse_and_score input list.
+- `/tmp/<profile>_job_enrichments_jobboards_{TODAY}.json` — `{hash: short_summary}`
+  enrichments. The board adapters fetched full descriptions in one pass, so
+  no per-job enrichment is needed in Step 3f — Step 3h's merge picks up
+  this file alongside Indeed and LinkedIn enrichments.
+
+Source status from the JSON line's `status` field:
+- `ok` — set `"job_boards": "ok"`.
+- `no_config` / `no_enabled` — set `"job_boards": "disabled"`.
+- Any non-zero exit / parse error — set `"job_boards": "fetcher_error"` and
+  continue. Step 3e will still run with whatever other sources succeeded.
+
+If the dispatcher exits non-zero or the JSON is unparseable, set
+`"job_boards": "fetcher_error"` and continue to Step 3e.
 
 ## Step 3e — Run the parser/scorer with all available sources (this profile)
 Build the input file list dynamically — only pass paths that exist:
@@ -214,10 +270,11 @@ Build the input file list dynamically — only pass paths that exist:
     $PROFILE_DIR/digest.md \
     $PROFILE_DIR/data/seen_jobs.json \
     $PROFILE_DIR/data/raw_searches/{TODAY}.txt \
-    $PROFILE_DIR/data/linkedin_raw/{TODAY}_normalized.txt
+    $PROFILE_DIR/data/linkedin_raw/{TODAY}_normalized.txt \
+    $PROFILE_DIR/data/job_boards_raw/{TODAY}.txt
   ```
 
-The parser auto-loads scoring rules from `$PROFILE_DIR/scoring.json` and detects source from each job_id prefix.
+The parser auto-loads scoring rules from `$PROFILE_DIR/scoring.json` and detects source from each job_id prefix (`hn-`, `linkedin-`, `jb-`, or no prefix for Indeed).
 
 This step writes:
   - `$PROFILE_DIR/needs_enrichment.json` — Indeed strong matches needing get_job_details
@@ -243,7 +300,7 @@ at Step 3h.
 For each entry (cap at 15):
   - Call `mcp__{INDEED_MCP_ID}__get_job_details` with the entry's `job_id`.
   - Run these calls SERIALLY with a 1-second sleep between each — same
-    rate-limit avoidance as Step 3b.
+    rate-limit avoidance as the Step 3b sub-agent.
   - Write a 2-3 sentence factual summary capturing what the team does, key
     skills/seniority, distinctive scope. Avoid company boilerplate. Under
     350 chars.
@@ -269,7 +326,8 @@ overrides a stale cached entry if both somehow exist for the same hash.
     c=json.load(open('$PROFILE_DIR/data/cached_enrichments_{TODAY}.json')) if os.path.exists('$PROFILE_DIR/data/cached_enrichments_{TODAY}.json') else {}; \
     a=json.load(open('/tmp/<profile>_job_enrichments_indeed_{TODAY}.json')) if os.path.exists('/tmp/<profile>_job_enrichments_indeed_{TODAY}.json') else {}; \
     b=json.load(open('/tmp/<profile>_job_enrichments_linkedin_{TODAY}.json')) if os.path.exists('/tmp/<profile>_job_enrichments_linkedin_{TODAY}.json') else {}; \
-    json.dump({**c, **a, **b}, open('/tmp/<profile>_job_enrichments_{TODAY}.json', 'w'))"
+    d=json.load(open('/tmp/<profile>_job_enrichments_jobboards_{TODAY}.json')) if os.path.exists('/tmp/<profile>_job_enrichments_jobboards_{TODAY}.json') else {}; \
+    json.dump({**c, **a, **b, **d}, open('/tmp/<profile>_job_enrichments_{TODAY}.json', 'w'))"
 
   python3 {PROJECT_DIR}/pipeline/splice_enrichments.py \
     $PROFILE_DIR/digest.md \
@@ -283,7 +341,8 @@ cache so the next run can skip them:
   python3 {PROJECT_DIR}/pipeline/update_enrichment_cache.py \
     $PROFILE_DIR/data/enrichment_cache.json \
     /tmp/<profile>_job_enrichments_indeed_{TODAY}.json \
-    /tmp/<profile>_job_enrichments_linkedin_{TODAY}.json
+    /tmp/<profile>_job_enrichments_linkedin_{TODAY}.json \
+    /tmp/<profile>_job_enrichments_jobboards_{TODAY}.json
   ```
 
 `update_enrichment_cache.py` skips missing input files silently, so this
@@ -342,7 +401,7 @@ non-`"ok"`.
 Example:
   ```bash
   cat > $PROFILE_DIR/data/source_status_{TODAY}.json << 'EOF'
-  {"indeed": "ok", "linkedin": "ok"}
+  {"indeed": "ok", "linkedin": "ok", "job_boards": "ok"}
   EOF
   ```
 
@@ -458,7 +517,7 @@ Call `mcp__Claude_in_Chrome__tabs_close_mcp` with the tabId from 3k.3.
 After all profiles are done, reply with one line per profile plus a header:
 ```
 Daily digest updated for N profiles:
-  • <profile1>: <X> new today, <Y> strong matches across <sources>, <Ki> Indeed enriched, <Kl> LinkedIn enriched — send: <send_status>
+  • <profile1>: <X> new today, <Y> strong matches across <sources>, <Ki> Indeed enriched, <Kl> LinkedIn enriched, <Kj> JobBoard enriched — send: <send_status>
   • <profile2>: ...
 ```
 

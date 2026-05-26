@@ -144,19 +144,23 @@ description. With Chrome, they're enriched alongside Indeed listings.
 
 The Chrome session is shared across profiles — only one sign-in needed.
 
-### Note: LinkedIn fetch + enrichment run as sub-agents
+### Note: Indeed search, LinkedIn fetch + enrichment run as sub-agents
 
-Steps 3c (Gmail) and 3d (Chrome enrichment) of the daily run are dispatched
-to a sub-agent so the bulky thread bodies and page text never enter the
-main assistant's 200K context window. The sub-agent prompts live at:
+Steps 3b (Indeed search matrix), 3c (Gmail) and 3d (Chrome enrichment) of the
+daily run are dispatched to sub-agents so the many search calls and the bulky
+thread bodies / page text never enter the main assistant's turn or 200K
+context budget. Step 3b in particular keeps the daily run from hitting the
+max-turns guardrail — the Indeed matrix is ~20-40 serial calls per profile,
+which used to be the biggest turn consumer. The sub-agent prompts live at:
+- `pipeline/agent_prompts/indeed_search_subagent.md`
 - `pipeline/agent_prompts/linkedin_fetch_subagent.md`
 - `pipeline/agent_prompts/linkedin_enrich_subagent.md`
 
-This is purely a context-window optimization — no extra setup, no new
+This is purely a turn/context optimization — no extra setup, no new
 credentials, no behavior difference visible from the digest. If you ever
-need to debug the LinkedIn flow, run those prompts manually against a
-profile by reading the file, doing the placeholder substitution shown at
-the top, and invoking the sub-agent.
+need to debug a flow, run those prompts manually against a profile by reading
+the file, doing the placeholder substitution shown at the top, and invoking
+the sub-agent.
 
 ---
 
@@ -227,9 +231,17 @@ The pipeline picks up config changes on the next run — no restart needed.
 - **LinkedIn descriptions empty** — Chrome wasn't running at run time, or the
   extension isn't signed in. Check Chrome status and re-run.
 
-- **Indeed rate-limited** — Indeed historically tolerates parallel bursts.
-  If you start seeing rate-limit errors, fall back to a serial-with-`sleep 1`
-  pattern in Step 3b of the template, or reduce role/location counts.
+- **Indeed rate-limited** — the Step 3b sub-agent already runs searches
+  serially with exponential backoff, so transient limits self-recover. If a
+  profile shows `"indeed": "rate_limited"` / `"rate_limited_partial"` in its
+  `source_status_{TODAY}.json`, the limiter was sticky for that run — reduce
+  role/location counts in `search_queries.json` to shrink the matrix.
+
+- **Daily run pauses on a "maximum turns" / continue prompt** — the run is
+  exceeding the harness per-run turn budget. Step 3b (Indeed) and the LinkedIn
+  steps already run as sub-agents to isolate their turns; if it still stalls,
+  the next lever is trimming low-yield role×location pairs, or delegating the
+  Step 3f Indeed `get_job_details` enrichment loop to a sub-agent too.
 
 - **Scoring feels off** — check `profiles/<name>/scoring.json`. Each scoring
   axis has its own section. Tweak one knob at a time and re-run to see the effect.
