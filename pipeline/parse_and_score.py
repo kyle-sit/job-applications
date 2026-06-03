@@ -23,7 +23,7 @@ import copy
 import json
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 HOURS_PER_YEAR = 2080  # for hourly → annual conversion
@@ -52,7 +52,12 @@ DEFAULT_CONFIG = {
             {"min": 200_000, "score": 3},
             {"min": 175_000, "score": 2},
             {"min": 150_000, "score": 1},
-        ]
+        ],
+        # Fallback salary score for sources that routinely don't publish a
+        # salary (e.g. LinkedIn job-alert listings), so a missing salary scores
+        # a neutral value instead of 0 and doesn't bury otherwise-good jobs.
+        # Sources not listed keep the default 0 for an unknown salary.
+        "unknown_fallback_by_source": {"LinkedIn": 4},
     },
     "recency": {
         "tiers_days": [
@@ -112,10 +117,25 @@ def parse_compensation(comp_str: str):
         return None, None
     if comp_str.strip() in ("$0 a year", "$0"):
         return None, None
-    nums = re.findall(r"\$?([\d,]+(?:\.\d+)?)", comp_str)
-    if not nums:
+    # Match each dollar amount plus an optional magnitude suffix (K=thousand,
+    # M=million). LinkedIn enrichment emits salaries like "$194.4K"; without
+    # suffix handling those parse as 194.4 and silently fail the salary floor.
+    # The (?![A-Za-z]) guard stops a following word (e.g. "$120,000 Kaiser")
+    # from being misread as a "K" multiplier.
+    matches = re.findall(r"\$?([\d,]+(?:\.\d+)?)\s*([KkMm])?(?![A-Za-z])", comp_str)
+    vals = []
+    for num, suffix in matches:
+        cleaned = num.replace(",", "")
+        if not cleaned or not any(c.isdigit() for c in cleaned):
+            continue
+        v = float(cleaned)
+        if suffix in ("K", "k"):
+            v *= 1_000
+        elif suffix in ("M", "m"):
+            v *= 1_000_000
+        vals.append(v)
+    if not vals:
         return None, None
-    vals = [float(n.replace(",", "")) for n in nums]
     if "hour" in comp_str.lower():
         vals = [v * HOURS_PER_YEAR for v in vals]
     if len(vals) == 1:
@@ -124,10 +144,49 @@ def parse_compensation(comp_str: str):
 
 
 def parse_date(date_str: str):
-    try:
-        return datetime.strptime(date_str.strip(), "%B %d, %Y")
-    except (ValueError, AttributeError):
+    if not date_str:
         return None
+    s = date_str.strip()
+    # Accept the long-form Indeed format and the ISO form LinkedIn writes into
+    # "Posted on" (the run date, e.g. "2026-06-02"). Without the ISO format the
+    # LinkedIn run date was unparseable, leaving recency at 0 for every job.
+    for fmt in ("%B %d, %Y", "%b %d, %Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt)
+        except (ValueError, AttributeError):
+            continue
+    return None
+
+
+# LinkedIn job-alert pages expose no machine-readable post date — the only
+# signal is a relative phrase like "posted 2 days ago" / "reposted 3 weeks ago"
+# that the Chrome enrichment captures into the Summary line. Convert it to an
+# absolute date (relative to the run date) so recency scoring reflects the real
+# posting age. Returns None when no phrase is present, so the caller can fall
+# back to the run date.
+RELATIVE_AGE_RE = re.compile(
+    r"(?:re)?posted\s+(\d+)\s*\+?\s*(minute|min|hour|day|week|month)s?\s+ago",
+    re.IGNORECASE,
+)
+
+
+def relative_age_to_date(text: str, ref_date):
+    if not text or ref_date is None:
+        return None
+    m = RELATIVE_AGE_RE.search(text)
+    if not m:
+        return None
+    n = int(m.group(1))
+    unit = m.group(2).lower()
+    if unit in ("minute", "min", "hour"):
+        days = 0
+    elif unit == "day":
+        days = n
+    elif unit == "week":
+        days = n * 7
+    else:  # month
+        days = n * 30
+    return ref_date - timedelta(days=days)
 
 
 def get_job_hash(job_id: str) -> str:
@@ -280,6 +339,12 @@ def score_location(location: str):
 def score_job(job, today):
     title_score, title_notes = score_title(job["title"])
     sal_score = score_salary(job["comp_high"])
+    # When the source didn't publish a salary (comp_high is None → score 0),
+    # apply a per-source neutral fallback so jobs from salary-sparse sources
+    # like LinkedIn aren't buried purely for lacking a figure.
+    if job["comp_high"] is None:
+        fallback = (CONFIG.get("salary", {}).get("unknown_fallback_by_source") or {})
+        sal_score = fallback.get(job.get("source", ""), sal_score)
     rec_score = score_recency(job["posted_dt"], today)
     loc_score = score_location(job["location"])
     return {
@@ -389,6 +454,16 @@ def main():
     all_jobs = parse_jobs(raw_text)
     for j in all_jobs:
         j["source"] = detect_source(j["job_id"])
+        # Recency for LinkedIn: prefer the real posting age the enrichment
+        # captured in the summary ("posted N days ago"); otherwise fall back to
+        # the run date already parsed from "Posted on". This guarantees every
+        # LinkedIn job earns a recency score instead of a silent 0.
+        if j["source"] == "LinkedIn":
+            real_dt = relative_age_to_date(j.get("summary", ""), j.get("posted_dt") or today)
+            if real_dt is not None:
+                j["posted_dt"] = real_dt
+            elif j.get("posted_dt") is None:
+                j["posted_dt"] = today
     deduped = dedupe(all_jobs)
     after_salary = [j for j in deduped if passes_salary_floor(j)]
     filtered = [j for j in after_salary if passes_recency(j, today)]
